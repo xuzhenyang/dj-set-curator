@@ -1,0 +1,173 @@
+"""CLI 界面 - 命令行交互入口"""
+
+import asyncio
+import logging
+import sys
+from typing import List, Optional
+
+import typer
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+
+from dj_set_curator.curator import DJSetCurator
+from dj_set_curator.mcp_client import CloudMusicMCPClient
+
+# 配置日志
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+app = typer.Typer(
+    name="dj-curator",
+    help="基于锚点歌曲的智能 DJ 选曲工具",
+    no_args_is_help=True,
+)
+console = Console()
+
+
+async def _check_login(mcp: CloudMusicMCPClient) -> bool:
+    """检查 MCP Server 登录状态"""
+    status = await mcp.check_status()
+    if not status.get("logged_in", False):
+        console.print(
+            Panel(
+                "[bold red]未登录网易云音乐[/bold red]\n"
+                "请先在 cloud-music-mcp-extended 中执行扫码登录:\n"
+                "  cloud-music-mcp (或使用 MCP Client 调用 cloud_music_login)",
+                title="⚠️ 登录Required",
+                border_style="red",
+            )
+        )
+        return False
+    return True
+
+
+@app.command()
+def create(
+    anchor: List[str] = typer.Option(
+        ..., "--anchor", "-a",
+        help="锚点歌曲（可多次指定，支持 'Artist - Song' 格式或网易云 ID）",
+    ),
+    name: str = typer.Option(
+        ..., "--name", "-n",
+        help="输出歌单名称",
+    ),
+    count: int = typer.Option(
+        20, "--count", "-c",
+        help="目标歌曲数量",
+        min=1, max=100,
+    ),
+    bpm_tolerance: float = typer.Option(
+        5.0, "--bpm-tol",
+        help="BPM 容差范围",
+    ),
+    diversity: float = typer.Option(
+        0.3, "--diversity", "-d",
+        help="多样性比例（0-1），越高歌单风格越多样",
+        min=0.0, max=1.0,
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v",
+        help="显示详细的选曲列表和评分",
+    ),
+    server_command: Optional[str] = typer.Option(
+        "cloud-music-mcp", "--server",
+        help="MCP Server 命令",
+    ),
+):
+    """基于锚点歌曲创建 DJ Set 歌单"""
+
+    async def run():
+        async with CloudMusicMCPClient(server_command=server_command) as mcp:
+            # 检查登录
+            if not await _check_login(mcp):
+                raise typer.Exit(1)
+
+            # 显示锚点分析
+            console.print(f"\n[bold cyan]🎵 锚点歌曲分析:[/bold cyan]")
+            for i, a in enumerate(anchor, 1):
+                console.print(f"  {i}. [dim]{a}[/dim]")
+
+            # 构建筛选配置
+            filter_config = {
+                "bpm_tolerance": bpm_tolerance,
+            }
+
+            curator = DJSetCurator(mcp_client=mcp, filter_config=filter_config)
+
+            # 执行选曲
+            with console.status("[bold green]正在构建歌单..."):
+                try:
+                    result = await curator.build_playlist(
+                        anchor_queries=list(anchor),
+                        playlist_name=name,
+                        target_count=count,
+                        diversity_ratio=diversity,
+                    )
+                except ValueError as e:
+                    console.print(f"[bold red]输入错误: {e}[/bold red]")
+                    raise typer.Exit(1)
+                except RuntimeError as e:
+                    console.print(f"[bold red]运行错误: {e}[/bold red]")
+                    raise typer.Exit(1)
+
+            # 展示结果
+            console.print(f"\n[bold green]✅ 歌单构建完成![/bold green]")
+            console.print(
+                Panel(
+                    f"[bold]{result['playlist_name']}[/bold]\n"
+                    f"  ID: {result['playlist_id']}\n"
+                    f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
+                    f"  候选池: {result['stats']['total_candidates']} 首\n"
+                    f"  入选: {result['stats']['filtered_count']} 首\n"
+                    f"  平均评分: {result['stats']['avg_score']}",
+                    title="📁 歌单信息",
+                    border_style="green",
+                )
+            )
+
+            # 详细列表
+            if verbose:
+                table = Table(
+                    title=f"选曲列表 - {result['playlist_name']}",
+                    box=box.ROUNDED,
+                )
+                table.add_column("#", style="cyan", justify="right", width=4)
+                table.add_column("歌曲", style="magenta")
+                table.add_column("艺术家", style="green")
+                table.add_column("评分", style="yellow", justify="right", width=6)
+                table.add_column("匹配原因", style="dim")
+
+                for i, s in enumerate(result["selected_songs"], 1):
+                    reasons = ", ".join(s.match_reasons) if s.match_reasons else "相似推荐"
+                    table.add_row(
+                        str(i),
+                        s.song.get("name", "未知"),
+                        s.song.get("artist", "未知"),
+                        f"{s.score:.0f}",
+                        reasons,
+                    )
+                console.print(table)
+
+            return result
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        console.print("\n[dim]已取消[/dim]")
+        raise typer.Exit(130)
+
+
+@app.command()
+def version():
+    """显示版本信息"""
+    from dj_set_curator import __version__
+    console.print(f"dj-set-curator [bold cyan]{__version__}[/bold cyan]")
+
+
+def main():
+    """CLI 入口"""
+    app()
