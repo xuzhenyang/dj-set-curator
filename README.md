@@ -6,6 +6,7 @@
 
 - **锚点驱动**：输入 1-2 首锚点歌曲，自动寻找风格相似的曲目
 - **智能评分**：基于 BPM 接近度、调性兼容性（Camelot Wheel）、艺术家关联度综合评分
+- **实时音频分析**：通过 librosa 自动分析歌曲 BPM 和调性，无需依赖平台元数据
 - **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索，扩充候选池
 - **多样性控制**：支持调整多样性比例，避免歌单过于同质化
 - **锚点入单**：锚点歌曲自动加入最终歌单，作为 Set 的核心曲目
@@ -118,7 +119,7 @@ dj-curator -a "Daft Punk - One More Time" \
 
 - 默认 `±5 BPM` 为满分兼容区
 - 超出容差区分数线性递减
-- 网易云 API 通常不返回 BPM，此时给予中等基础分
+- 通过 librosa 实时分析音频获取 BPM，不依赖平台元数据
 
 ### 调性匹配（Camelot Wheel）
 
@@ -137,6 +138,19 @@ dj-curator -a "Daft Punk - One More Time" \
 - `key_weight`: 调性兼容性（默认 30%）
 - `artist_weight`: 艺术家关联度（默认 25%）
 - `diversity_weight`: 多样性（默认 20%）
+
+### 音频分析缓存
+
+音频片段和分析结果默认缓存到系统缓存目录：
+
+| 平台 | 缓存路径 |
+|------|----------|
+| macOS | `~/Library/Caches/dj-set-curator/` |
+| Linux | `~/.cache/dj-set-curator/` |
+| Windows | `%LOCALAPPDATA%/dj-set-curator/` |
+
+- `audio_segments/` — 下载的音频片段（保留 7 天，自动清理）
+- `analysis_cache.json` — BPM/Key 分析结果（永久缓存，歌曲属性不变）
 
 ## 开发指南
 
@@ -175,9 +189,9 @@ python -m dj_set_curator --anchor "Song Name" --name "Playlist"
 ## 注意事项
 
 1. **登录状态**：使用前确保 `cloud-music-mcp-extended` 已完成扫码登录
-2. **BPM/Key 数据**：网易云 API 不总是返回 BPM 和调性信息，筛选逻辑会优雅降级
+2. **音频分析**：首次分析歌曲需要下载音频片段（约 5-10 秒/首），分析结果会自动缓存
 3. **API 限制**：频繁调用可能被限流，建议合理使用
-4. **版权**：本工具仅操作歌单收藏，不涉及下载/解密
+4. **版权**：音频分析仅使用网易云提供的试听链接，不保存完整音频文件
 
 ## 依赖项目
 

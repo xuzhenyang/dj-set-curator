@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from dj_set_curator.anchor import AnchorAnalyzer
+from dj_set_curator.audio_analyzer import AudioAnalyzer
 from dj_set_curator.filters import SongFilter
 from dj_set_curator.models import AnchorSong, ScoredSong
 from dj_set_curator.mcp_client import CloudMusicMCPClient
@@ -146,6 +147,21 @@ class DJSetCurator:
         anchors = await self.anchor_analyzer.resolve_multiple(anchor_queries, self.mcp)
         logger.info("锚点解析完成: %s", anchors)
 
+        # 1.5 分析锚点歌曲的 BPM/Key（用于后续评分参考）
+        analyzer = AudioAnalyzer(self.mcp)
+        for anchor in anchors:
+            if anchor.bpm is None or anchor.key is None:
+                analysis = await analyzer.analyze_song(anchor.id)
+                if analysis:
+                    if anchor.bpm is None:
+                        anchor.bpm = analysis.get("bpm")
+                    if anchor.key is None:
+                        anchor.key = analysis.get("camelot") or analysis.get("key")
+                    logger.info(
+                        "锚点音频分析: %s - BPM=%s Key=%s",
+                        anchor.name, anchor.bpm, anchor.key,
+                    )
+
         # 2. 获取相似推荐（每个锚点分别获取）
         all_candidates = []
         for anchor in anchors:
@@ -168,7 +184,30 @@ class DJSetCurator:
                 unique_candidates, anchors, target_count
             )
 
-        # 5. 评分排序
+        # 5. 音频分析：为候选歌曲补充 BPM/Key 数据
+        analyzer = AudioAnalyzer(self.mcp)
+        for candidate in unique_candidates:
+            cid = str(candidate.get("id", ""))
+            if not cid:
+                continue
+            # 只有缺失 BPM/Key 时才分析
+            has_bpm = "bpm" in candidate and candidate["bpm"] is not None
+            has_key = "key" in candidate and candidate["key"] is not None
+            if not has_bpm or not has_key:
+                analysis = await analyzer.analyze_song(cid)
+                if analysis:
+                    if not has_bpm:
+                        candidate["bpm"] = analysis.get("bpm")
+                    if not has_key:
+                        candidate["key"] = analysis.get("camelot") or analysis.get("key")
+                    logger.info(
+                        "音频分析: %s - BPM=%s Key=%s",
+                        candidate.get("name", "未知"),
+                        analysis.get("bpm"),
+                        analysis.get("key"),
+                    )
+
+        # 6. 评分排序
         scored = self.filter.score_candidates(unique_candidates, anchors)
 
         # 6. 应用多样性：按 diversity_ratio 混入一些分数较低但风格不同的歌曲

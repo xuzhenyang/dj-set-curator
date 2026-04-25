@@ -174,6 +174,18 @@ class CloudMusicMCPClient:
             raise RuntimeError(f"获取歌曲详情失败: {result}")
         return {}
 
+    async def get_audio_url(self, song_id: str) -> dict:
+        """获取歌曲音频下载链接，返回 {id, url, br, type, duration}"""
+        result = await self._call_tool(
+            "cloud_music_get_audio_url",
+            {"song_id": str(song_id)},
+        )
+        if isinstance(result, dict) and "url" in result:
+            return result
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"获取音频链接失败: {result}")
+        return {}
+
     async def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]):
         """批量添加歌曲到歌单"""
         result = await self._call_tool(
