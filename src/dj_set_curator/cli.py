@@ -77,6 +77,10 @@ def create(
         "cloud-music-mcp", "--server",
         help="MCP Server 命令",
     ),
+    expand: bool = typer.Option(
+        True, "--expand/--no-expand",
+        help="候选不足时启用级联扩展（用候选歌曲作为二级锚点继续搜索）",
+    ),
 ):
     """基于锚点歌曲创建 DJ Set 歌单"""
 
@@ -106,6 +110,7 @@ def create(
                         playlist_name=name,
                         target_count=count,
                         diversity_ratio=diversity,
+                        enable_expand=expand,
                     )
                 except ValueError as e:
                     console.print(f"[bold red]输入错误: {e}[/bold red]")
@@ -115,6 +120,8 @@ def create(
                     raise typer.Exit(1)
 
             # 展示结果
+            anchor_count = result['stats'].get('anchor_count', len(result['anchors']))
+            selected_count = result['stats'].get('selected_count', result['stats']['filtered_count'] - anchor_count)
             console.print(f"\n[bold green]✅ 歌单构建完成![/bold green]")
             console.print(
                 Panel(
@@ -122,7 +129,7 @@ def create(
                     f"  ID: {result['playlist_id']}\n"
                     f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
                     f"  候选池: {result['stats']['total_candidates']} 首\n"
-                    f"  入选: {result['stats']['filtered_count']} 首\n"
+                    f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
                     f"  平均评分: {result['stats']['avg_score']}",
                     title="📁 歌单信息",
                     border_style="green",
@@ -141,7 +148,18 @@ def create(
                 table.add_column("评分", style="yellow", justify="right", width=6)
                 table.add_column("匹配原因", style="dim")
 
-                for i, s in enumerate(result["selected_songs"], 1):
+                # 先展示锚点歌曲
+                for i, a in enumerate(result["anchors"], 1):
+                    table.add_row(
+                        str(i),
+                        a.name,
+                        a.artist,
+                        "—",
+                        "[bold cyan]锚点[/bold cyan]",
+                    )
+
+                # 再展示推荐歌曲
+                for i, s in enumerate(result["selected_songs"], 1 + anchor_count):
                     reasons = ", ".join(s.match_reasons) if s.match_reasons else "相似推荐"
                     table.add_row(
                         str(i),

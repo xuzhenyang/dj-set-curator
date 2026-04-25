@@ -41,12 +41,79 @@ class DJSetCurator:
         anchor_ids = {a.id for a in anchors}
         return [c for c in candidates if str(c.get("id", "")) not in anchor_ids]
 
+    async def _expand_candidates(
+        self,
+        candidates: list[dict],
+        anchors: list[AnchorSong],
+        target_count: int,
+        max_extra_anchors: int = 3,
+        limit_per_anchor: int = 20,
+    ) -> list[dict]:
+        """
+        级联扩展：用已选候选中的 top 歌曲作为二级锚点，获取更多相似推荐
+
+        Args:
+            candidates: 当前候选池
+            anchors: 原始锚点（用于排除）
+            target_count: 目标歌曲数量
+            max_extra_anchors: 最多用多少首二级锚点
+            limit_per_anchor: 每个二级锚点请求的相似推荐数量
+        """
+        if len(candidates) >= target_count:
+            return candidates
+
+        # 从当前候选中选取前 N 首作为二级锚点
+        # 优先选不同艺术家的，避免同质化
+        extra_anchor_ids = set()
+        extra_anchors = []
+        used_artists = set()
+
+        for song in candidates:
+            sid = str(song.get("id", ""))
+            artist = song.get("artist", "").lower()
+            # 排除原始锚点
+            if sid in {a.id for a in anchors}:
+                continue
+            # 避免重复艺术家，增加多样性
+            if artist in used_artists and len(extra_anchors) >= 2:
+                continue
+            if sid not in extra_anchor_ids:
+                extra_anchor_ids.add(sid)
+                extra_anchors.append(song)
+                used_artists.add(artist)
+                if len(extra_anchors) >= max_extra_anchors:
+                    break
+
+        if not extra_anchors:
+            logger.warning("无可用二级锚点进行扩展")
+            return candidates
+
+        logger.info(
+            "候选池不足 (%d < %d)，启用级联扩展，使用 %d 个二级锚点: %s",
+            len(candidates), target_count, len(extra_anchors),
+            [f"{s.get('name')}({s.get('id')})" for s in extra_anchors],
+        )
+
+        all_new = list(candidates)  # 保留原有候选
+        for song in extra_anchors:
+            logger.info("获取二级锚点 '%s' 的相似推荐...", song.get("name", "未知"))
+            similar = await self.mcp.get_similar_songs(str(song["id"]), limit=limit_per_anchor)
+            logger.info("二级锚点 '%s' 获得 %d 首相似推荐", song.get("name", "未知"), len(similar))
+            all_new.extend(similar)
+
+        # 去重 + 移除原始锚点
+        unique = self._deduplicate(all_new)
+        unique = self._remove_anchors(unique, anchors)
+        logger.info("级联扩展后候选歌曲: %d 首", len(unique))
+        return unique
+
     async def build_playlist(
         self,
         anchor_queries: list[str],
         playlist_name: str,
         target_count: int = 20,
         diversity_ratio: float = 0.3,
+        enable_expand: bool = True,
     ) -> dict:
         """
         构建歌单的主流程
@@ -56,6 +123,7 @@ class DJSetCurator:
             playlist_name: 输出歌单名称
             target_count: 目标歌曲数量
             diversity_ratio: 多样性比例（0-1），控制是否混入非相似歌曲
+            enable_expand: 是否启用级联扩展（候选不足时用二级锚点扩充）
 
         Returns:
             {
@@ -94,25 +162,38 @@ class DJSetCurator:
         if not unique_candidates:
             raise RuntimeError("未获取到任何候选歌曲，请检查锚点歌曲是否有效或 MCP Server 登录状态")
 
-        # 4. 评分排序
+        # 4. 级联扩展（如启用且候选不足）
+        if enable_expand and len(unique_candidates) < target_count:
+            unique_candidates = await self._expand_candidates(
+                unique_candidates, anchors, target_count
+            )
+
+        # 5. 评分排序
         scored = self.filter.score_candidates(unique_candidates, anchors)
 
-        # 5. 应用多样性：按 diversity_ratio 混入一些分数较低但风格不同的歌曲
+        # 6. 应用多样性：按 diversity_ratio 混入一些分数较低但风格不同的歌曲
         selected = self._apply_diversity(scored, target_count, diversity_ratio)
 
         if not selected:
             raise RuntimeError("筛选后没有符合条件的歌曲")
 
-        # 6. 创建歌单并添加
+        # 7. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
+        anchor_ids = [a.id for a in anchors]
+        selected_ids = [str(s.song["id"]) for s in selected]
+        # 过滤掉已选中的锚点（避免重复）
+        selected_ids = [sid for sid in selected_ids if sid not in anchor_ids]
+        track_ids = anchor_ids + selected_ids
+
+        # 8. 创建歌单并添加
         logger.info("正在创建歌单 '%s'...", playlist_name)
         playlist_id = await self.mcp.create_playlist(playlist_name)
         logger.info("歌单创建成功，ID: %s", playlist_id)
 
-        track_ids = [str(s.song["id"]) for s in selected]
         await self.mcp.add_tracks_to_playlist(playlist_id, track_ids)
-        logger.info("已添加 %d 首歌曲到歌单", len(track_ids))
+        logger.info("已添加 %d 首歌曲到歌单（含 %d 首锚点）", len(track_ids), len(anchor_ids))
 
         avg_score = sum(s.score for s in selected) / len(selected) if selected else 0
+        total_tracks = len(track_ids)
 
         return {
             "playlist_id": playlist_id,
@@ -121,7 +202,9 @@ class DJSetCurator:
             "selected_songs": selected,
             "stats": {
                 "total_candidates": len(unique_candidates),
-                "filtered_count": len(selected),
+                "filtered_count": total_tracks,
+                "selected_count": len(selected_ids),
+                "anchor_count": len(anchor_ids),
                 "avg_score": round(avg_score, 2),
             },
         }

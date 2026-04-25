@@ -46,15 +46,28 @@ class AnchorAnalyzer:
 
         # 1. 纯数字 ID
         if self._is_song_id(query):
-            # 通过搜索该 ID 来确认歌曲信息（ID 搜索通常能返回唯一结果）
+            # 先尝试直接获取歌曲详情
+            detail = await mcp_client.get_song_detail(query)
+            if detail and detail.get("id"):
+                return AnchorSong(
+                    id=str(detail["id"]),
+                    name=detail.get("name", "未知"),
+                    artist=detail.get("artist", "未知"),
+                )
+            # 降级：通过搜索确认
             songs = await mcp_client.search_song(query)
-            if not songs:
-                raise ValueError(f"找不到 ID 为 {query} 的歌曲")
-            song = songs[0]
+            for song in songs:
+                if str(song.get("id", "")) == query:
+                    return AnchorSong(
+                        id=str(song["id"]),
+                        name=song.get("name", "未知"),
+                        artist=song.get("artist", "未知"),
+                    )
+            # 全部失败，直接信任用户输入的 ID
             return AnchorSong(
-                id=str(song["id"]),
-                name=song.get("name", "未知"),
-                artist=song.get("artist", "未知"),
+                id=query,
+                name=f"ID:{query}",
+                artist="未知",
             )
 
         # 2. "Artist - Song" 格式 或 纯歌曲名

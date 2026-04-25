@@ -6,7 +6,9 @@
 
 - **锚点驱动**：输入 1-2 首锚点歌曲，自动寻找风格相似的曲目
 - **智能评分**：基于 BPM 接近度、调性兼容性（Camelot Wheel）、艺术家关联度综合评分
+- **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索，扩充候选池
 - **多样性控制**：支持调整多样性比例，避免歌单过于同质化
+- **锚点入单**：锚点歌曲自动加入最终歌单，作为 Set 的核心曲目
 - **一键建单**：自动创建网易云歌单并批量收藏入选曲目
 
 ## 前置依赖
@@ -76,6 +78,18 @@ dj-curator -a "Radiohead - Everything In Its Right Place" \
   --verbose
 ```
 
+### 级联扩展（候选不足时自动扩充）
+
+```bash
+dj-curator -a "keshi - WANTCHU" --name "WANTCHU vibe" --count 20 --expand
+```
+
+### 关闭级联扩展
+
+```bash
+dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
+```
+
 ### 调整多样性
 
 ```bash
@@ -94,6 +108,7 @@ dj-curator -a "Daft Punk - One More Time" \
 | `--count` | `-c` | `20` | 目标歌曲数量 (1-100) |
 | `--bpm-tol` | | `5.0` | BPM 容差范围 |
 | `--diversity` | `-d` | `0.3` | 多样性比例 (0-1) |
+| `--expand` / `--no-expand` | | `True` | 候选不足时启用级联扩展 |
 | `--verbose` | `-v` | `False` | 显示详细选曲列表 |
 | `--server` | | `cloud-music-mcp` | MCP Server 命令 |
 
