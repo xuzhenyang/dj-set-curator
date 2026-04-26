@@ -1,15 +1,15 @@
-"""选曲引擎核心 - 整合锚点分析、相似推荐、筛选排序"""
+"""选曲引擎核心 - 整合锚点分析、多源采集、过渡评分、序列构建"""
 
 import logging
 from typing import Optional
 
 from dj_set_curator.anchor import AnchorAnalyzer
 from dj_set_curator.audio_analyzer import AudioAnalyzer
-from dj_set_curator.arranger import EnergyArcArranger
 from dj_set_curator.filters import SongFilter
 from dj_set_curator.models import AnchorSong, ScoredSong
 from dj_set_curator.mcp_client import CloudMusicMCPClient
 from dj_set_curator.sources import MultiSourceCollector
+from dj_set_curator.transition import SequentialSelector, TransitionScorer
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,36 @@ class DJSetCurator:
         anchor_ids = {a.id for a in anchors}
         return [c for c in candidates if str(c.get("id", "")) not in anchor_ids]
 
+    @staticmethod
+    def _energy_heuristic(song: dict) -> float:
+        """粗粒度能量估计 - 基于 BPM + 歌曲名 heuristics"""
+        energy = 50.0
+
+        # BPM 代理能量
+        bpm = song.get("bpm")
+        if bpm is not None and bpm > 0:
+            energy = bpm * 0.5  # 70 BPM → 35, 140 BPM → 70
+
+        name = song.get("name", "").lower()
+
+        # 高能量关键词
+        high_energy_keywords = ["remix", "club", "bass", "drop", "hard", "bounce",
+                                 "extended", "mix", "edit", "dance", "up", "party"]
+        for kw in high_energy_keywords:
+            if kw in name:
+                energy += 8
+                break  # 只加一次
+
+        # 低能量关键词
+        low_energy_keywords = ["acoustic", "piano", "sleep", "slow", "soft",
+                               "calm", "quiet", "ambient", "chill", "ballad"]
+        for kw in low_energy_keywords:
+            if kw in name:
+                energy -= 12
+                break  # 只减一次
+
+        return max(10, min(95, energy))
+
     async def _expand_candidates(
         self,
         candidates: list[dict],
@@ -52,21 +82,10 @@ class DJSetCurator:
         max_extra_anchors: int = 3,
         limit_per_anchor: int = 20,
     ) -> list[dict]:
-        """
-        级联扩展：用已选候选中的 top 歌曲作为二级锚点，获取更多相似推荐
-
-        Args:
-            candidates: 当前候选池
-            anchors: 原始锚点（用于排除）
-            target_count: 目标歌曲数量
-            max_extra_anchors: 最多用多少首二级锚点
-            limit_per_anchor: 每个二级锚点请求的相似推荐数量
-        """
+        """级联扩展：用已选候选中的 top 歌曲作为二级锚点，获取更多相似推荐"""
         if len(candidates) >= target_count:
             return candidates
 
-        # 从当前候选中选取前 N 首作为二级锚点
-        # 优先选不同艺术家的，避免同质化
         extra_anchor_ids = set()
         extra_anchors = []
         used_artists = set()
@@ -74,10 +93,8 @@ class DJSetCurator:
         for song in candidates:
             sid = str(song.get("id", ""))
             artist = song.get("artist", "").lower()
-            # 排除原始锚点
             if sid in {a.id for a in anchors}:
                 continue
-            # 避免重复艺术家，增加多样性
             if artist in used_artists and len(extra_anchors) >= 2:
                 continue
             if sid not in extra_anchor_ids:
@@ -92,19 +109,17 @@ class DJSetCurator:
             return candidates
 
         logger.info(
-            "候选池不足 (%d < %d)，启用级联扩展，使用 %d 个二级锚点: %s",
+            "候选池不足 (%d < %d)，启用级联扩展，使用 %d 个二级锚点",
             len(candidates), target_count, len(extra_anchors),
-            [f"{s.get('name')}({s.get('id')})" for s in extra_anchors],
         )
 
-        all_new = list(candidates)  # 保留原有候选
+        all_new = list(candidates)
         for song in extra_anchors:
             logger.info("获取二级锚点 '%s' 的相似推荐...", song.get("name", "未知"))
             similar = await self.mcp.get_similar_songs(str(song["id"]), limit=limit_per_anchor)
             logger.info("二级锚点 '%s' 获得 %d 首相似推荐", song.get("name", "未知"), len(similar))
             all_new.extend(similar)
 
-        # 去重 + 移除原始锚点
         unique = self._deduplicate(all_new)
         unique = self._remove_anchors(unique, anchors)
         logger.info("级联扩展后候选歌曲: %d 首", len(unique))
@@ -120,28 +135,9 @@ class DJSetCurator:
         arrange_mode: str = "flat",
     ) -> dict:
         """
-        构建歌单的主流程
+        构建歌单的主流程（v2.0 - Transition-based selection）
 
-        Args:
-            anchor_queries: 锚点歌曲列表（1-2 首）
-            playlist_name: 输出歌单名称
-            target_count: 目标歌曲数量
-            diversity_ratio: 多样性比例（0-1），控制是否混入非相似歌曲
-            enable_expand: 是否启用级联扩展（候选不足时用二级锚点扩充）
-            arrange_mode: 能量曲线编排模式 (flat/warm-up/peak-mid/rollercoaster/climax-end)
-
-        Returns:
-            {
-                "playlist_id": str,
-                "playlist_name": str,
-                "anchors": list[AnchorSong],
-                "selected_songs": list[ScoredSong],
-                "stats": {
-                    "total_candidates": int,
-                    "filtered_count": int,
-                    "avg_score": float
-                }
-            }
+        流程：锚点 → 多源采集 → 粗粒度能量估计 → 预过滤 → 贪心序列构建 → 创建歌单
         """
         if not anchor_queries:
             raise ValueError("至少需要提供一个锚点歌曲")
@@ -151,7 +147,7 @@ class DJSetCurator:
         anchors = await self.anchor_analyzer.resolve_multiple(anchor_queries, self.mcp)
         logger.info("锚点解析完成: %s", anchors)
 
-        # 1.5 分析锚点歌曲的 BPM/Key（用于后续评分参考）
+        # 2. 分析锚点 BPM/Key + 精能量分析
         analyzer = AudioAnalyzer(self.mcp)
         for anchor in anchors:
             if anchor.bpm is None or anchor.key is None:
@@ -165,10 +161,27 @@ class DJSetCurator:
                         "锚点音频分析: %s - BPM=%s Key=%s",
                         anchor.name, anchor.bpm, anchor.key,
                     )
+            # 锚点能量 = librosa 精分析 或 BPM 代理
+            if anchor.bpm is not None:
+                anchor_energy = anchor.bpm * 0.5
+                # 尝试精分析
+                try:
+                    audio_info = await self.mcp.get_audio_url(anchor.id)
+                    url = audio_info.get("url")
+                    if url:
+                        # 复用 AudioAnalyzer 的下载和分析
+                        from dj_set_curator.arranger import EnergyAnalyzer
+                        ea = EnergyAnalyzer(self.mcp)
+                        precise = await ea.analyze_energy(anchor.id)
+                        if precise is not None:
+                            anchor_energy = precise
+                except Exception:
+                    pass
+                # 动态添加 energy 属性
+                anchor.energy = anchor_energy
 
-        # 2. 多源采集候选歌曲
+        # 3. 多源采集候选歌曲
         collector = MultiSourceCollector(self.mcp)
-        # 将 AnchorSong 转换为 dict 格式，并补充 artist_id / album_id
         anchor_dicts = []
         for a in anchors:
             ad = {"id": a.id, "name": a.name, "artist": a.artist}
@@ -182,66 +195,82 @@ class DJSetCurator:
             anchor_dicts.append(ad)
         all_candidates = await collector.collect(anchor_dicts)
 
-        # 3. 去重 + 移除锚点本身
+        # 4. 去重 + 移除锚点本身
         unique_candidates = self._remove_anchors(all_candidates, anchors)
         logger.info("去重后候选歌曲: %d 首", len(unique_candidates))
 
         if not unique_candidates:
             raise RuntimeError("未获取到任何候选歌曲，请检查锚点歌曲是否有效或 MCP Server 登录状态")
 
-        # 4. 级联扩展（如启用且候选不足）
+        # 5. 级联扩展（如启用且候选不足）
         if enable_expand and len(unique_candidates) < target_count:
             unique_candidates = await self._expand_candidates(
                 unique_candidates, anchors, target_count
             )
 
-        # 5. 音频分析：为候选歌曲补充 BPM/Key 数据
-        analyzer = AudioAnalyzer(self.mcp)
+        # 6. 粗粒度能量估计 + 轻量 BPM/Key 补充
         for candidate in unique_candidates:
+            # 能量估计（无需下载音频）
+            candidate["energy"] = self._energy_heuristic(candidate)
+
+            # 如果缺失 BPM/Key，尝试音频分析（但只分析有数据的，VIP 跳过）
             cid = str(candidate.get("id", ""))
-            if not cid:
-                continue
-            # 只有缺失 BPM/Key 时才分析
-            has_bpm = "bpm" in candidate and candidate["bpm"] is not None
-            has_key = "key" in candidate and candidate["key"] is not None
+            has_bpm = candidate.get("bpm") is not None
+            has_key = candidate.get("key") is not None
             if not has_bpm or not has_key:
-                analysis = await analyzer.analyze_song(cid)
-                if analysis:
-                    if not has_bpm:
-                        candidate["bpm"] = analysis.get("bpm")
-                    if not has_key:
-                        candidate["key"] = analysis.get("camelot") or analysis.get("key")
-                    logger.info(
-                        "音频分析: %s - BPM=%s Key=%s",
-                        candidate.get("name", "未知"),
-                        analysis.get("bpm"),
-                        analysis.get("key"),
-                    )
+                try:
+                    analysis = await analyzer.analyze_song(cid)
+                    if analysis:
+                        if not has_bpm:
+                            candidate["bpm"] = analysis.get("bpm")
+                        if not has_key:
+                            candidate["key"] = analysis.get("camelot") or analysis.get("key")
+                        # 如果有精分析，更新能量
+                        if analysis.get("bpm"):
+                            candidate["energy"] = analysis["bpm"] * 0.5
+                except Exception:
+                    pass  # VIP 歌曲会失败，保留 heuristics 能量
 
-        # 6. 评分排序
+        # 7. 预过滤：用 SongFilter 过滤掉低分候选
         scored = self.filter.score_candidates(unique_candidates, anchors)
+        min_score = self.filter.min_score
+        filtered = [s for s in scored if s.score >= min_score]
+        logger.info("预过滤: %d 首候选中 %d 首通过 (min_score=%s)", len(scored), len(filtered), min_score)
 
-        # 7. 应用多样性：按 diversity_ratio 混入一些分数较低但风格不同的歌曲
-        selected = self._apply_diversity(scored, target_count, diversity_ratio)
+        if not filtered:
+            logger.warning("预过滤后无候选，放宽限制使用全部候选")
+            filtered = scored
+
+        # 提取过滤后的候选 dict
+        filtered_candidates = [s.song for s in filtered]
+
+        # 8. 贪心序列构建（核心改变）
+        scorer = TransitionScorer(bpm_tolerance=self.filter.bpm_tolerance)
+        selector = SequentialSelector(scorer, arrange_mode=arrange_mode)
+        selected = selector.select(filtered_candidates, anchors, target_count)
 
         if not selected:
             raise RuntimeError("筛选后没有符合条件的歌曲")
 
-        # 8. 能量曲线编排
-        if arrange_mode != "flat":
-            arranger = EnergyArcArranger(self.mcp, arc_mode=arrange_mode)
-            selected = await arranger.arrange(
-                selected, bpm_tolerance=self.filter.bpm_tolerance
-            )
+        # 9. 对最终入选歌曲做精能量分析（可选，提升质量）
+        for s in selected:
+            sid = str(s.song.get("id", ""))
+            try:
+                from dj_set_curator.arranger import EnergyAnalyzer
+                ea = EnergyAnalyzer(self.mcp)
+                precise_energy = await ea.analyze_energy(sid)
+                if precise_energy is not None:
+                    s.song["energy"] = precise_energy
+            except Exception:
+                pass  # 保持 heuristics 能量
 
-        # 7. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
+        # 10. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
         anchor_ids = [a.id for a in anchors]
         selected_ids = [str(s.song["id"]) for s in selected]
-        # 过滤掉已选中的锚点（避免重复）
         selected_ids = [sid for sid in selected_ids if sid not in anchor_ids]
         track_ids = anchor_ids + selected_ids
 
-        # 8. 创建歌单并添加
+        # 11. 创建歌单并添加
         logger.info("正在创建歌单 '%s'...", playlist_name)
         playlist_id = await self.mcp.create_playlist(playlist_name)
         logger.info("歌单创建成功，ID: %s", playlist_id)
@@ -265,45 +294,3 @@ class DJSetCurator:
                 "avg_score": round(avg_score, 2),
             },
         }
-
-    def _apply_diversity(
-        self,
-        scored: list[ScoredSong],
-        target_count: int,
-        diversity_ratio: float,
-    ) -> list[ScoredSong]:
-        """
-        应用多样性策略
-
-        - (1 - diversity_ratio) 比例取 Top 高分歌曲
-        - diversity_ratio 比例从剩余候选中取（避免全部同质化）
-        """
-        if not scored:
-            return []
-
-        diversity_count = int(target_count * diversity_ratio)
-        top_count = target_count - diversity_count
-
-        selected = scored[:top_count]
-
-        # 从剩余候选中选取不与已选重复艺术家的歌曲作为多样性补充
-        remaining = scored[top_count:]
-        used_artists = {s.song.get("artist", "").lower() for s in selected}
-
-        for candidate in remaining:
-            if len(selected) >= target_count:
-                break
-            artist = candidate.song.get("artist", "").lower()
-            if artist not in used_artists:
-                selected.append(candidate)
-                used_artists.add(artist)
-
-        # 如果多样性补充不够，用剩余高分补齐
-        if len(selected) < target_count:
-            idx = top_count
-            while len(selected) < target_count and idx < len(scored):
-                if scored[idx] not in selected:
-                    selected.append(scored[idx])
-                idx += 1
-
-        return selected

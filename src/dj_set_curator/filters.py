@@ -170,16 +170,30 @@ class SongFilter:
         if candidate_key is None or not anchor_keys:
             return 50.0
 
-        distances = [self._key_distance(candidate_key, ak) for ak in anchor_keys]
-        min_dist = min(distances)
+        best_score = 0.0
+        c_norm = self._normalize_key(candidate_key)
 
-        if min_dist == 0:
-            return 100.0
-        if min_dist == 1:
-            return 80.0
-        if min_dist == 2:
-            return 50.0
-        return 10.0
+        for ak in anchor_keys:
+            dist = self._key_distance(candidate_key, ak)
+            a_norm = self._normalize_key(ak)
+
+            if dist == 0:
+                # 区分完全同 key 和 relative minor/major
+                if c_norm == a_norm:
+                    score = 100.0  # 完全同 key
+                else:
+                    score = 95.0   # relative minor/major（A↔B）
+            elif dist == 1:
+                score = 85.0
+            elif dist == 2:
+                score = 55.0
+            else:
+                score = 15.0
+
+            if score > best_score:
+                best_score = score
+
+        return best_score
 
     def _artist_score(self, candidate: dict, anchors: list[AnchorSong]) -> float:
         """艺术家关联度评分 (0-100)"""
