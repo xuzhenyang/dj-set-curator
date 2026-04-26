@@ -1,6 +1,7 @@
 """多源候选采集器 - 从网易云多个渠道收集候选歌曲"""
 
 import logging
+import re
 from typing import Optional
 
 from dj_set_curator.mcp_client import CloudMusicMCPClient
@@ -17,6 +18,25 @@ class CandidateSource:
     async def collect(self, anchor: dict) -> list[dict]:
         """返回候选歌曲列表 [{id, name, artist}]"""
         raise NotImplementedError
+
+    @staticmethod
+    def _has_chinese(text: str) -> bool:
+        """检查文本是否包含中文字符"""
+        return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+    @staticmethod
+    def _language_match(anchor_name: str, candidate_name: str) -> bool:
+        """
+        简单的语言一致性检查
+        如果锚点是英文歌名，候选也应该是英文歌名（减少跨语言噪音）
+        """
+        anchor_has_cn = CandidateSource._has_chinese(anchor_name)
+        cand_has_cn = CandidateSource._has_chinese(candidate_name)
+        # 锚点和候选语言一致时返回 True
+        # 特殊情况：都允许（不做严格限制），只排除"锚点英文但候选明显中文"的情况
+        if not anchor_has_cn and cand_has_cn:
+            return False
+        return True
 
 
 class SimilarSource(CandidateSource):
@@ -136,18 +156,19 @@ class TagSearchSource(CandidateSource):
 class GenreSearchSource(CandidateSource):
     """流派搜索源 - 基于 BPM 推断流派并搜索相关歌曲"""
 
-    # BPM → 可能流派关键词映射
+    # BPM → 可能流派关键词映射（使用中文关键词，网易云对英文流派搜索效果差）
     BPM_GENRE_MAP = [
-        (0, 80, ["chill", "R&B", "soul", "ballad", "lofi"]),
-        (80, 110, ["indie", "pop", "alternative", "folk"]),
-        (110, 130, ["house", "electronic", "dance", "disco"]),
-        (130, 150, ["techno", "trance", "edm", "bass"]),
-        (150, 999, ["drum and bass", "hardstyle", "speed"]),
+        (0, 80, ["欧美 R&B", "欧美 soul", "抒情", "lofi"]),
+        (80, 110, ["欧美 indie", "欧美流行", "欧美民谣"]),
+        (110, 130, ["电子", "舞曲", "house", "disco"]),
+        (130, 150, ["电子", "techno", "edm", "电音"]),
+        (150, 999, [" drum and bass", "hardstyle", "速核"]),
     ]
 
     async def collect(self, anchor: dict) -> list[dict]:
         bpm = anchor.get("bpm")
         artist = anchor.get("artist", "")
+        anchor_name = anchor.get("name", "")
         if not bpm:
             logger.info("流派源: 锚点无 BPM 数据，跳过")
             return []
@@ -167,24 +188,26 @@ class GenreSearchSource(CandidateSource):
         anchor_artist = artist.lower()
 
         # 搜索每个流派关键词 + "热门"
-        for genre in genres[:2]:  # 只取前 2 个流派，避免过多
-            queries = [
-                f"{genre} 热门",
-                f"{genre} 推荐",
-            ]
-            for query in queries:
-                logger.info("流派源: 搜索 '%s'...", query)
-                try:
-                    tracks = await self.mcp.search_song(query)
-                    for t in tracks[:8]:
-                        tid = str(t.get("id", ""))
-                        t_artist = t.get("artist", "").lower()
-                        # 排除锚点 artist 的歌曲（保证跨流派多样性）
-                        if tid and tid not in seen_ids and anchor_artist not in t_artist:
-                            seen_ids.add(tid)
-                            all_tracks.append(t)
-                except Exception as e:
-                    logger.warning("流派源: '%s' 搜索失败 - %s", query, e)
+        for genre in genres[:1]:  # 只取第 1 个流派，避免过多噪音
+            query = f"{genre} 热门"
+            logger.info("流派源: 搜索 '%s'...", query)
+            try:
+                tracks = await self.mcp.search_song(query)
+                for t in tracks[:5]:
+                    tid = str(t.get("id", ""))
+                    t_artist = t.get("artist", "").lower()
+                    t_name = t.get("name", "")
+                    # 过滤条件：
+                    # 1. 排除锚点 artist
+                    # 2. 语言一致性（避免跨语言噪音）
+                    # 3. 排除明显非音乐内容（DJ版、车载版等低质内容）
+                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                        if self._language_match(anchor_name, t_name):
+                            if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
+                                seen_ids.add(tid)
+                                all_tracks.append(t)
+            except Exception as e:
+                logger.warning("流派源: '%s' 搜索失败 - %s", query, e)
 
         logger.info("流派源: 共获得 %d 首（跨流派）", len(all_tracks))
         return all_tracks
@@ -195,6 +218,7 @@ class CrossArtistSource(CandidateSource):
 
     async def collect(self, anchor: dict) -> list[dict]:
         artist = anchor.get("artist", "")
+        anchor_name = anchor.get("name", "")
         if not artist:
             return []
 
@@ -202,24 +226,29 @@ class CrossArtistSource(CandidateSource):
         seen_ids = set()
         anchor_artist = artist.lower()
 
-        # 多种搜索策略找相关 artist
+        # 搜索策略：只使用精准的查询，避免语义搜索的噪音
+        # 网易云搜索不支持真正的语义搜索，"风格相近"等词会被关键词匹配
         queries = [
-            f"和 {artist} 风格相近",
-            f"类似 {artist}",
-            f"{artist} 合作",
+            f"{artist} feat",  # 找合作歌曲
         ]
 
         for query in queries:
             logger.info("跨艺术家源: 搜索 '%s'...", query)
             try:
                 tracks = await self.mcp.search_song(query)
-                for t in tracks[:10]:
+                for t in tracks[:5]:
                     tid = str(t.get("id", ""))
                     t_artist = t.get("artist", "").lower()
-                    # 只保留非锚点 artist 的歌曲
+                    t_name = t.get("name", "")
+                    # 过滤条件：
+                    # 1. 只保留非锚点 artist 的歌曲
+                    # 2. 语言一致性
+                    # 3. 排除低质内容
                     if tid and tid not in seen_ids and anchor_artist not in t_artist:
-                        seen_ids.add(tid)
-                        all_tracks.append(t)
+                        if self._language_match(anchor_name, t_name):
+                            if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
+                                seen_ids.add(tid)
+                                all_tracks.append(t)
             except Exception as e:
                 logger.warning("跨艺术家源: '%s' 搜索失败 - %s", query, e)
 
