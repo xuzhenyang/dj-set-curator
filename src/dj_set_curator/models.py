@@ -13,6 +13,7 @@ class AnchorSong:
     artist: str
     bpm: Optional[float] = None
     key: Optional[str] = None
+    energy: Optional[float] = None
     genre: Optional[str] = None
 
     def __repr__(self) -> str:
