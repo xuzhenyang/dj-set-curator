@@ -115,7 +115,7 @@ class DJSetCurator:
         anchor_queries: list[str],
         playlist_name: str,
         target_count: int = 20,
-        diversity_ratio: float = 0.3,
+        diversity_ratio: float = 0.8,
         enable_expand: bool = True,
         arrange_mode: str = "flat",
     ) -> dict:

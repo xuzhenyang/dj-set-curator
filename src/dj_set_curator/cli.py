@@ -65,7 +65,7 @@ def create(
         help="BPM 容差范围",
     ),
     diversity: float = typer.Option(
-        0.3, "--diversity", "-d",
+        0.8, "--diversity", "-d",
         help="多样性比例（0-1），越高歌单风格越多样",
         min=0.0, max=1.0,
     ),
