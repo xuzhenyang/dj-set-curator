@@ -214,43 +214,60 @@ class GenreSearchSource(CandidateSource):
 
 
 class CrossArtistSource(CandidateSource):
-    """跨艺术家搜索源 - 寻找与锚点 artist 风格相近的其他 artist"""
+    """跨艺术家搜索源 - 使用网易云相似艺人 API 寻找风格相近的其他 artist"""
 
     async def collect(self, anchor: dict) -> list[dict]:
-        artist = anchor.get("artist", "")
+        artist_id = anchor.get("artist_id")
+        artist_name = anchor.get("artist", "")
         anchor_name = anchor.get("name", "")
-        if not artist:
-            return []
+        if not artist_id:
+            # 尝试通过搜索获取 artist_id
+            detail = await self.mcp.get_song_detail(str(anchor.get("id", "")))
+            artist_id = detail.get("artist_id") if isinstance(detail, dict) else None
+            if not artist_id:
+                logger.warning("跨艺术家源: 无法获取 '%s' 的 artist_id", artist_name)
+                return []
 
         all_tracks = []
         seen_ids = set()
-        anchor_artist = artist.lower()
+        anchor_artist = artist_name.lower()
 
-        # 搜索策略：只使用精准的查询，避免语义搜索的噪音
-        # 网易云搜索不支持真正的语义搜索，"风格相近"等词会被关键词匹配
-        queries = [
-            f"{artist} feat",  # 找合作歌曲
-        ]
+        # 1. 获取相似艺人
+        logger.info("跨艺术家源: 获取 '%s'(ID:%s) 的相似艺人...", artist_name, artist_id)
+        try:
+            similar_artists = await self.mcp.get_similar_artists(str(artist_id))
+        except Exception as e:
+            logger.warning("跨艺术家源: 获取相似艺人失败 - %s", e)
+            return []
 
-        for query in queries:
-            logger.info("跨艺术家源: 搜索 '%s'...", query)
+        logger.info("跨艺术家源: '%s' 有 %d 个相似艺人", artist_name, len(similar_artists))
+
+        # 2. 对每个相似艺人获取热门歌曲（只取前 5 个相似艺人，避免过多）
+        for sa in similar_artists[:5]:
+            sa_id = sa.get("id")
+            sa_name = sa.get("name", "未知")
+            if not sa_id:
+                continue
+
+            logger.info("跨艺术家源: 获取相似艺人 '%s'(ID:%s) 的热门歌曲...", sa_name, sa_id)
             try:
-                tracks = await self.mcp.search_song(query)
-                for t in tracks[:5]:
+                tracks = await self.mcp.get_artist_tracks(str(sa_id), limit=5)
+                for t in tracks:
                     tid = str(t.get("id", ""))
                     t_artist = t.get("artist", "").lower()
                     t_name = t.get("name", "")
                     # 过滤条件：
-                    # 1. 只保留非锚点 artist 的歌曲
-                    # 2. 语言一致性
-                    # 3. 排除低质内容
+                    # 1. 排除锚点 artist
+                    # 2. 去重
+                    # 3. 语言一致性
+                    # 4. 排除低质内容
                     if tid and tid not in seen_ids and anchor_artist not in t_artist:
                         if self._language_match(anchor_name, t_name):
                             if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
                                 seen_ids.add(tid)
                                 all_tracks.append(t)
             except Exception as e:
-                logger.warning("跨艺术家源: '%s' 搜索失败 - %s", query, e)
+                logger.warning("跨艺术家源: 获取 '%s' 歌曲失败 - %s", sa_name, e)
 
         logger.info("跨艺术家源: 共获得 %d 首（不同 artist）", len(all_tracks))
         return all_tracks
