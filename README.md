@@ -11,7 +11,12 @@
   - BPM 兼容：支持 ±3% pitch、半速/倍速混音、±5/±10 BPM 分级
   - Key 过渡：DJ-proven Camelot 规则（+1 升能 / -1 降能 / ±2 张力 / relative 和谐）
   - 能量衔接：选曲时直接考虑目标能量曲线，避免事后硬重排
-- **多源采集**：同时从相似推荐、艺术家热门、同专辑、每日推荐等多渠道收集候选
+- **多源采集**：7 个来源同时采集，候选池从 10+ 首扩展到 40+ 首
+  - **相似推荐**（网易云官方 API）
+  - **艺术家热门**
+  - **相似艺人**（网易云 `/simi/artist` API，核心来源）
+  - **流派搜索**（基于 BPM 推断流派关键词）
+  - **同专辑**、**每日推荐**、**标签搜索**
 - **粗粒度能量估计**：BPM 代理 + 歌曲名 heuristics，VIP 歌曲 100% 可用
 - **能量曲线编排**：支持 flat / warm-up / peak-mid / rollercoaster / climax-end 五种模式
 - **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索
@@ -62,7 +67,7 @@ dj-curator -a "keshi - WANTCHU" -n "Warm Up Set" --count 15 --arrange warm-up -v
 dj-curator -a "keshi - WANTCHU" -n "Climax Set" --count 15 --arrange climax-end -v
 ```
 
-### 多锚点
+### 多锚点（打破同质化的最强手段）
 
 ```bash
 dj-curator \
@@ -132,7 +137,16 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 ```
 锚点歌曲
   ↓
-多源采集（相似推荐 + 艺术家热门 + 专辑 + 搜索）
+多源采集（7 个来源并行）
+  ├─ SimilarSource          网易云相似推荐 API
+  ├─ ArtistTopSource        艺术家热门歌曲
+  ├─ CrossArtistSource      相似艺人 → 热门歌曲（核心来源）
+  ├─ GenreSearchSource      BPM 推断流派 → 关键词搜索
+  ├─ AlbumSource            同专辑歌曲
+  ├─ DailyRecSource         每日推荐模拟
+  └─ TagSearchSource        标签搜索
+  ↓
+去重 + 过滤（ID 去重 / 歌曲名去重 / 语言一致性 / 低质内容过滤）
   ↓
 粗粒度能量估计（BPM 代理 + 歌曲名 heuristics）
   ↓
@@ -147,13 +161,39 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 创建网易云歌单
 ```
 
+### 多源采集详情
+
+| 来源 | 机制 | 预期贡献 |
+|------|------|----------|
+| **SimilarSource** | 网易云 `simi/song` API | 10-20 首，风格最接近锚点 |
+| **ArtistTopSource** | `GetArtistTracks` API | 8-12 首，同艺术家热门 |
+| **CrossArtistSource** | `simi/artist` API → 热门歌曲 | 15-25 首，**真正风格相近的其他艺人** |
+| **GenreSearchSource** | BPM 推断流派 → 搜索 | 3-8 首，跨流派探索 |
+| **AlbumSource** | `GetAlbumInfo` API | 0-5 首（单曲专辑可能为 0） |
+| **DailyRecSource** | 搜索艺术家名字 | 5-8 首 |
+| **TagSearchSource** | 搜索 "artist 热门" | 3-5 首 |
+
+**CrossArtistSource 是核心升级**：使用网易云官方 `/simi/artist` API（非搜索关键词匹配），返回真正风格相近的艺人（如 keshi → Lauv, Demxntia, The Weeknd, JVKE），再获取他们的热门歌曲。质量远高于搜索方案。
+
+### 过滤策略
+
+| 过滤层 | 机制 | 作用 |
+|--------|------|------|
+| **ID 去重** | 按 song id 去重 | 避免同一首歌出现两次 |
+| **歌曲名去重** | 同名 + 同 artist 视为重复 | 避免不同版本的同一首歌 |
+| **语言一致性** | 英文锚点过滤中文候选 | 避免跨语言噪音（如 keshi → 王可可） |
+| **低质内容过滤** | 排除 "DJ版"、"车载版"、"抖音"、"Cover" | 提升候选质量 |
+| **Artist 连续惩罚** | 同 artist 连续出现扣分递增 | 避免同质化 |
+
 ### 过渡评分维度
 
 | 维度 | 权重 | 说明 |
 |------|------|------|
-| BPM 过渡 | 40% | ±3% pitch=100, 半速/倍速=85, ±5 BPM=60~100, ±10 BPM=0~60 |
-| Key 过渡 | 35% | 同 key=100, +1=90, -1=85, relative=95, ±2=70, >2=10 |
-| 能量方向 | 25% | 接近目标能量加分，突变 >30 分扣分 |
+| BPM 过渡 | 30% | ±3% pitch=100, 半速/倍速=85, ±5 BPM=60~100, ±10 BPM=0~60 |
+| Key 过渡 | 25% | 同 key=100, +1=90, -1=85, relative=95, ±2=70, >2=10 |
+| 能量方向 | 45% | 接近目标能量加分，突变 >30 分扣分 |
+
+> Energy 权重最高（45%），确保能量曲线对选曲有显著影响。
 
 ### 调性匹配（Camelot Wheel）
 
@@ -212,7 +252,7 @@ dj-set-curator/
 │   ├── curator.py           # 选曲引擎核心（v0.2.0 过渡评分架构）
 │   ├── filters.py           # 预过滤引擎（Camelot Wheel + BPM）
 │   ├── transition.py        # Pair-wise 过渡评分 + 贪心序列构建
-│   ├── sources.py           # 多源候选采集器
+│   ├── sources.py           # 多源候选采集器（7 个来源）
 │   ├── arranger.py          # 能量分析器（librosa RMS）
 │   ├── audio_analyzer.py    # 音频分析（BPM/Key，librosa）
 │   └── models.py            # 数据模型
