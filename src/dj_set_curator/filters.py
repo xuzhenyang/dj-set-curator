@@ -242,6 +242,17 @@ class SongFilter:
         total_weight = sum(available_weights.values())
         weights = {k: v / total_weight for k, v in available_weights.items()}
 
+        # 方案 C：限制 Artist 权重上限为 40%，防止同艺术家垄断
+        max_artist_ratio = 0.40
+        if weights.get("artist", 0) > max_artist_ratio:
+            excess = weights["artist"] - max_artist_ratio
+            weights["artist"] = max_artist_ratio
+            # 将超出部分平分给其他维度
+            other_keys = [k for k in weights if k != "artist"]
+            if other_keys:
+                for k in other_keys:
+                    weights[k] += excess / len(other_keys)
+
         logger.debug(
             "动态权重: BPM=%s%%, Key=%s%%, Artist=%s%%, Diversity=%s%%",
             round(weights.get("bpm", 0) * 100),

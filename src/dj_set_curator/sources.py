@@ -48,7 +48,7 @@ class ArtistTopSource(CandidateSource):
                 return []
 
         logger.info("艺术家源: 获取 '%s'(ID:%s) 的热门歌曲...", artist_name, artist_id)
-        tracks = await self.mcp.get_artist_tracks(str(artist_id), limit=20)
+        tracks = await self.mcp.get_artist_tracks(str(artist_id), limit=12)
         logger.info("艺术家源: '%s' 获得 %d 首", artist_name, len(tracks))
         return tracks
 
@@ -93,7 +93,7 @@ class DailyRecSource(CandidateSource):
             tracks = await self.mcp.search_song(query)
             # 只取前 15 首，且排除锚点本身
             anchor_id = str(anchor.get("id", ""))
-            tracks = [t for t in tracks[:15] if str(t.get("id", "")) != anchor_id]
+            tracks = [t for t in tracks[:8] if str(t.get("id", "")) != anchor_id]
             logger.info("每日推荐源: 获得 %d 首", len(tracks))
             return tracks
         except Exception as e:
@@ -119,7 +119,7 @@ class TagSearchSource(CandidateSource):
             logger.info("标签搜索源: 搜索 '%s'...", query)
             try:
                 tracks = await self.mcp.search_song(query)
-                for t in tracks[:10]:
+                for t in tracks[:5]:
                     tid = str(t.get("id", ""))
                     if tid and tid not in seen_ids:
                         seen_ids.add(tid)
