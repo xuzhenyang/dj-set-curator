@@ -1,14 +1,20 @@
 # DJ Set Curator 🎧
 
-基于锚点歌曲的智能 DJ 选曲工具，调用网易云音乐 MCP Server 自动构建风格一致的歌单。
+基于锚点歌曲的智能 DJ 选曲工具，调用网易云音乐 MCP Server 自动构建**可混音的 DJ Set 歌单**。
+
+> v0.2.0 核心升级：从"相似歌曲推荐"进化为"过渡感知的 DJ Set 构建器"
 
 ## 功能特性
 
-- **锚点驱动**：输入 1-2 首锚点歌曲，自动寻找风格相似的曲目
-- **智能评分**：基于 BPM 接近度、调性兼容性（Camelot Wheel）、艺术家关联度综合评分
-- **实时音频分析**：通过 librosa 自动分析歌曲 BPM 和调性，无需依赖平台元数据
-- **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索，扩充候选池
-- **多样性控制**：支持调整多样性比例，避免歌单过于同质化
+- **锚点驱动**：输入 1-2 首锚点歌曲，自动构建风格连贯的 Set
+- **Pair-wise 过渡评分**：不再评分"单曲像不像锚点"，而是评分"下一首能不能接上一首"
+  - BPM 兼容：支持 ±3% pitch、半速/倍速混音、±5/±10 BPM 分级
+  - Key 过渡：DJ-proven Camelot 规则（+1 升能 / -1 降能 / ±2 张力 / relative 和谐）
+  - 能量衔接：选曲时直接考虑目标能量曲线，避免事后硬重排
+- **多源采集**：同时从相似推荐、艺术家热门、同专辑、每日推荐等多渠道收集候选
+- **粗粒度能量估计**：BPM 代理 + 歌曲名 heuristics，VIP 歌曲 100% 可用
+- **能量曲线编排**：支持 flat / warm-up / peak-mid / rollercoaster / climax-end 五种模式
+- **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索
 - **锚点入单**：锚点歌曲自动加入最终歌单，作为 Set 的核心曲目
 - **一键建单**：自动创建网易云歌单并批量收藏入选曲目
 
@@ -46,20 +52,24 @@ pip install -e .
 
 ## 使用示例
 
-### 单锚点
+### 单锚点 + 能量曲线
 
 ```bash
-dj-curator --anchor "Aphex Twin - Windowlicker" --name "IDM Set" --count 20
+# 渐进式能量曲线（适合派对开场）
+dj-curator -a "keshi - WANTCHU" -n "Warm Up Set" --count 15 --arrange warm-up -v
+
+# 结尾高潮（适合收尾）
+dj-curator -a "keshi - WANTCHU" -n "Climax Set" --count 15 --arrange climax-end -v
 ```
 
 ### 多锚点
 
 ```bash
 dj-curator \
-  -a "Boards of Canada - Roygbiv" \
-  -a "Aphex Twin - Alberto Balsalm" \
-  --name "Warp Classics" \
-  --count 30
+  -a "keshi - WANTCHU" \
+  -a "The Weeknd - Blinding Lights" \
+  --name "Cross-genre Set" \
+  --count 20
 ```
 
 ### 使用歌曲 ID
@@ -70,13 +80,23 @@ dj-curator -a "29732235" --name "Test Set" -v
 
 ### 详细输出
 
-添加 `-v` / `--verbose` 参数查看完整的选曲列表和评分：
+添加 `-v` / `--verbose` 参数查看完整的选曲列表和过渡评分：
 
 ```bash
 dj-curator -a "Radiohead - Everything In Its Right Place" \
   --name "Chill Electronic" \
   --count 15 \
   --verbose
+```
+
+### 调整多样性
+
+```bash
+# 默认值 0.8（80% 的歌曲来自不同艺术家）
+dj-curator -a "Daft Punk - One More Time" \
+  --name "French House" \
+  --diversity 0.5 \
+  --count 25
 ```
 
 ### 级联扩展（候选不足时自动扩充）
@@ -91,15 +111,6 @@ dj-curator -a "keshi - WANTCHU" --name "WANTCHU vibe" --count 20 --expand
 dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 ```
 
-### 调整多样性
-
-```bash
-dj-curator -a "Daft Punk - One More Time" \
-  --name "French House" \
-  --diversity 0.5 \
-  --count 25
-```
-
 ## CLI 参数说明
 
 | 参数 | 简写 | 默认值 | 说明 |
@@ -108,36 +119,70 @@ dj-curator -a "Daft Punk - One More Time" \
 | `--name` | `-n` | *必填* | 输出歌单名称 |
 | `--count` | `-c` | `20` | 目标歌曲数量 (1-100) |
 | `--bpm-tol` | | `5.0` | BPM 容差范围 |
-| `--diversity` | `-d` | `0.3` | 多样性比例 (0-1) |
+| `--diversity` | `-d` | `0.8` | 多样性比例 (0-1)，越高歌单风格越多样 |
+| `--arrange` | `-r` | `flat` | 能量曲线模式: flat/warm-up/peak-mid/rollercoaster/climax-end |
 | `--expand` / `--no-expand` | | `True` | 候选不足时启用级联扩展 |
-| `--verbose` | `-v` | `False` | 显示详细选曲列表 |
+| `--verbose` | `-v` | `False` | 显示详细选曲列表和过渡评分 |
 | `--server` | | `cloud-music-mcp` | MCP Server 命令 |
 
-## 配置说明
+## 引擎架构
 
-### BPM 容差
+### 选曲流程（v0.2.0）
 
-- 默认 `±5 BPM` 为满分兼容区
-- 超出容差区分数线性递减
-- 通过 librosa 实时分析音频获取 BPM，不依赖平台元数据
+```
+锚点歌曲
+  ↓
+多源采集（相似推荐 + 艺术家热门 + 专辑 + 搜索）
+  ↓
+粗粒度能量估计（BPM 代理 + 歌曲名 heuristics）
+  ↓
+预过滤（SongFilter 过滤掉低分候选）
+  ↓
+贪心序列构建（SequentialSelector）
+  ← 每一步选择"与当前末尾过渡分最高"的下一首
+  ← 同时匹配目标能量曲线
+  ↓
+精能量分析（仅对入选歌曲做 librosa）
+  ↓
+创建网易云歌单
+```
+
+### 过渡评分维度
+
+| 维度 | 权重 | 说明 |
+|------|------|------|
+| BPM 过渡 | 40% | ±3% pitch=100, 半速/倍速=85, ±5 BPM=60~100, ±10 BPM=0~60 |
+| Key 过渡 | 35% | 同 key=100, +1=90, -1=85, relative=95, ±2=70, >2=10 |
+| 能量方向 | 25% | 接近目标能量加分，突变 >30 分扣分 |
 
 ### 调性匹配（Camelot Wheel）
 
-| 距离 | 含义 | 评分 |
-|------|------|------|
-| 0 | 完全匹配 / A-B 互换 | 100 |
-| 1 | 相邻兼容 | 80 |
-| 2 | 较远但可混音 | 50 |
-| 3+ | 不推荐 | 10 |
+| 过渡类型 | 含义 | 评分 |
+|----------|------|------|
+| 同 key | 完全匹配 | 100 |
+| Relative (A↔B) | 大小调互换 | 95 |
+| +1 顺时针 | 能量提升 | 90 |
+| -1 逆时针 | 能量下降 | 85 |
+| ±2 | 有轻微张力 | 70 |
+| >2 | 不推荐混音 | 10 |
 
-### 评分权重
+### 能量曲线模式
 
-可通过代码中的 `SongFilter` 参数自定义：
+| 模式 | 描述 | 适用场景 |
+|------|------|----------|
+| `flat` | 能量均匀分布 | 背景播放、工作学习 |
+| `warm-up` | 低→高→低（抛物线） | 派对开场 |
+| `peak-mid` | 中段能量最高 | 演出核心时段 |
+| `rollercoaster` | 高低交替 | 活跃氛围 |
+| `climax-end` | 逐步攀升到结尾 | 收尾高潮 |
 
-- `bpm_weight`: BPM 接近度（默认 25%）
-- `key_weight`: 调性兼容性（默认 30%）
-- `artist_weight`: 艺术家关联度（默认 25%）
-- `diversity_weight`: 多样性（默认 20%）
+### 音频分析策略
+
+- **粗粒度**（所有候选）：`energy = BPM × 0.5` + 歌曲名关键词 heuristics
+  - 高能量词：remix / club / bass / drop → +8
+  - 低能量词：acoustic / piano / sleep / chill → -12
+- **精分析**（仅入选歌曲）：librosa RMS 能量分析
+- **VIP 歌曲**：粗粒度能量 100% 可用，不再失败
 
 ### 音频分析缓存
 
@@ -163,9 +208,14 @@ dj-set-curator/
 │   ├── __main__.py          # python -m 入口
 │   ├── cli.py               # CLI 界面
 │   ├── mcp_client.py        # MCP Client 封装
-│   ├── anchor.py            # 锚点歌曲分析
-│   ├── curator.py           # 选曲引擎核心
-│   └── filters.py           # 筛选排序引擎
+│   ├── anchor.py            # 锚点歌曲解析
+│   ├── curator.py           # 选曲引擎核心（v0.2.0 过渡评分架构）
+│   ├── filters.py           # 预过滤引擎（Camelot Wheel + BPM）
+│   ├── transition.py        # Pair-wise 过渡评分 + 贪心序列构建
+│   ├── sources.py           # 多源候选采集器
+│   ├── arranger.py          # 能量分析器（librosa RMS）
+│   ├── audio_analyzer.py    # 音频分析（BPM/Key，librosa）
+│   └── models.py            # 数据模型
 ├── tests/
 │   ├── test_anchor.py
 │   ├── test_filters.py
