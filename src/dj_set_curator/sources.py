@@ -133,6 +133,100 @@ class TagSearchSource(CandidateSource):
         return all_tracks
 
 
+class GenreSearchSource(CandidateSource):
+    """流派搜索源 - 基于 BPM 推断流派并搜索相关歌曲"""
+
+    # BPM → 可能流派关键词映射
+    BPM_GENRE_MAP = [
+        (0, 80, ["chill", "R&B", "soul", "ballad", "lofi"]),
+        (80, 110, ["indie", "pop", "alternative", "folk"]),
+        (110, 130, ["house", "electronic", "dance", "disco"]),
+        (130, 150, ["techno", "trance", "edm", "bass"]),
+        (150, 999, ["drum and bass", "hardstyle", "speed"]),
+    ]
+
+    async def collect(self, anchor: dict) -> list[dict]:
+        bpm = anchor.get("bpm")
+        artist = anchor.get("artist", "")
+        if not bpm:
+            logger.info("流派源: 锚点无 BPM 数据，跳过")
+            return []
+
+        # 根据 BPM 选择流派关键词
+        genres = []
+        for low, high, g_list in self.BPM_GENRE_MAP:
+            if low <= bpm < high:
+                genres = g_list
+                break
+
+        if not genres:
+            return []
+
+        all_tracks = []
+        seen_ids = set()
+        anchor_artist = artist.lower()
+
+        # 搜索每个流派关键词 + "热门"
+        for genre in genres[:2]:  # 只取前 2 个流派，避免过多
+            queries = [
+                f"{genre} 热门",
+                f"{genre} 推荐",
+            ]
+            for query in queries:
+                logger.info("流派源: 搜索 '%s'...", query)
+                try:
+                    tracks = await self.mcp.search_song(query)
+                    for t in tracks[:8]:
+                        tid = str(t.get("id", ""))
+                        t_artist = t.get("artist", "").lower()
+                        # 排除锚点 artist 的歌曲（保证跨流派多样性）
+                        if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                            seen_ids.add(tid)
+                            all_tracks.append(t)
+                except Exception as e:
+                    logger.warning("流派源: '%s' 搜索失败 - %s", query, e)
+
+        logger.info("流派源: 共获得 %d 首（跨流派）", len(all_tracks))
+        return all_tracks
+
+
+class CrossArtistSource(CandidateSource):
+    """跨艺术家搜索源 - 寻找与锚点 artist 风格相近的其他 artist"""
+
+    async def collect(self, anchor: dict) -> list[dict]:
+        artist = anchor.get("artist", "")
+        if not artist:
+            return []
+
+        all_tracks = []
+        seen_ids = set()
+        anchor_artist = artist.lower()
+
+        # 多种搜索策略找相关 artist
+        queries = [
+            f"和 {artist} 风格相近",
+            f"类似 {artist}",
+            f"{artist} 合作",
+        ]
+
+        for query in queries:
+            logger.info("跨艺术家源: 搜索 '%s'...", query)
+            try:
+                tracks = await self.mcp.search_song(query)
+                for t in tracks[:10]:
+                    tid = str(t.get("id", ""))
+                    t_artist = t.get("artist", "").lower()
+                    # 只保留非锚点 artist 的歌曲
+                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                        seen_ids.add(tid)
+                        all_tracks.append(t)
+            except Exception as e:
+                logger.warning("跨艺术家源: '%s' 搜索失败 - %s", query, e)
+
+        logger.info("跨艺术家源: 共获得 %d 首（不同 artist）", len(all_tracks))
+        return all_tracks
+
+
 class MultiSourceCollector:
     """多源候选采集器 - 整合所有来源"""
 
@@ -144,6 +238,8 @@ class MultiSourceCollector:
             AlbumSource(mcp_client),
             DailyRecSource(mcp_client),
             TagSearchSource(mcp_client),
+            GenreSearchSource(mcp_client),
+            CrossArtistSource(mcp_client),
         ]
 
     @staticmethod

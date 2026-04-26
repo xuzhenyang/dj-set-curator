@@ -169,9 +169,9 @@ class TransitionScorer:
         if curr_artist.lower() != next_artist.lower():
             return 0.0
 
-        # 同艺术家惩罚递增
-        penalties = {0: 0, 1: 5, 2: 20, 3: 50}
-        return penalties.get(consecutive_same, 60)
+        # 同艺术家惩罚递增（更激进，连续>2首时大幅扣分）
+        penalties = {0: 0, 1: 8, 2: 25, 3: 55, 4: 80}
+        return penalties.get(consecutive_same, 85)
 
     # ───────────────────────────────────────────────
     # 综合过渡评分
@@ -211,8 +211,8 @@ class TransitionScorer:
             consecutive_same_artist,
         )
 
-        # 综合权重：BPM 40% + Key 35% + Energy 25%
-        total = bpm_s * 0.40 + key_s * 0.35 + energy_s * 0.25 - artist_penalty
+        # 综合权重：BPM 30% + Key 25% + Energy 45%（提高能量权重，让曲线更明显）
+        total = bpm_s * 0.30 + key_s * 0.25 + energy_s * 0.45 - artist_penalty
         total = max(0, min(100, total))
 
         return {

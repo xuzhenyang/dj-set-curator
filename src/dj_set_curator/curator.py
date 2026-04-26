@@ -45,6 +45,20 @@ class DJSetCurator:
         return [c for c in candidates if str(c.get("id", "")) not in anchor_ids]
 
     @staticmethod
+    def _deduplicate_by_name(candidates: list[dict]) -> list[dict]:
+        """按歌曲名+艺术家去重（忽略 ID，同名同 artist 视为重复）"""
+        seen = set()
+        result = []
+        for song in candidates:
+            name = song.get("name", "").lower().strip()
+            artist = song.get("artist", "").lower().strip()
+            key = f"{name}::{artist}"
+            if key and key not in seen:
+                seen.add(key)
+                result.append(song)
+        return result
+
+    @staticmethod
     def _energy_heuristic(song: dict) -> float:
         """粗粒度能量估计 - 基于 BPM + 歌曲名 heuristics"""
         energy = 50.0
@@ -195,8 +209,10 @@ class DJSetCurator:
             anchor_dicts.append(ad)
         all_candidates = await collector.collect(anchor_dicts)
 
-        # 4. 去重 + 移除锚点本身
-        unique_candidates = self._remove_anchors(all_candidates, anchors)
+        # 4. 去重 + 移除锚点本身 + 歌曲名去重
+        unique_candidates = self._deduplicate(all_candidates)
+        unique_candidates = self._remove_anchors(unique_candidates, anchors)
+        unique_candidates = self._deduplicate_by_name(unique_candidates)
         logger.info("去重后候选歌曲: %d 首", len(unique_candidates))
 
         if not unique_candidates:
