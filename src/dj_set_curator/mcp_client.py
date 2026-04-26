@@ -186,6 +186,30 @@ class CloudMusicMCPClient:
             raise RuntimeError(f"获取音频链接失败: {result}")
         return {}
 
+    async def get_artist_tracks(self, artist_id: str, limit: int = 30) -> list[dict]:
+        """获取艺术家热门歌曲列表 [{id, name, artist, album}]"""
+        result = await self._call_tool(
+            "cloud_music_get_artist_tracks",
+            {"artist_id": str(artist_id), "limit": limit},
+        )
+        if isinstance(result, list):
+            return result
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"获取艺术家歌曲失败: {result}")
+        return []
+
+    async def get_album_songs(self, album_id: str) -> list[dict]:
+        """获取专辑歌曲列表 [{id, name, artist, album}]"""
+        result = await self._call_tool(
+            "cloud_music_get_album_songs",
+            {"album_id": str(album_id)},
+        )
+        if isinstance(result, list):
+            return result
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"获取专辑歌曲失败: {result}")
+        return []
+
     async def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]):
         """批量添加歌曲到歌单"""
         result = await self._call_tool(

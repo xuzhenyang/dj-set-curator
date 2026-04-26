@@ -222,27 +222,51 @@ class SongFilter:
         2. 调性兼容性（Camelot Wheel）
         3. 艺术家关联度
         4. 多样性
+
+        动态权重：当某个维度数据缺失时，自动将该权重重新分配给其他可用维度
         """
         anchor_bpms = [a.bpm for a in anchors if a.bpm is not None]
         anchor_keys = [a.key for a in anchors if a.key is not None]
+        has_bpm_data = len(anchor_bpms) > 0
+        has_key_data = len(anchor_keys) > 0
+
+        # 计算动态权重
+        available_weights = {}
+        if has_bpm_data:
+            available_weights["bpm"] = self.bpm_weight
+        if has_key_data:
+            available_weights["key"] = self.key_weight
+        available_weights["artist"] = self.artist_weight
+        available_weights["diversity"] = self.diversity_weight
+
+        total_weight = sum(available_weights.values())
+        weights = {k: v / total_weight for k, v in available_weights.items()}
+
+        logger.debug(
+            "动态权重: BPM=%s%%, Key=%s%%, Artist=%s%%, Diversity=%s%%",
+            round(weights.get("bpm", 0) * 100),
+            round(weights.get("key", 0) * 100),
+            round(weights["artist"] * 100),
+            round(weights["diversity"] * 100),
+        )
 
         scored = []
         for candidate in candidates:
             candidate_bpm = self._extract_bpm(candidate)
             candidate_key = self._extract_key(candidate)
 
-            bpm_s = self._bpm_score(candidate_bpm, anchor_bpms)
-            key_s = self._key_score(candidate_key, anchor_keys)
+            bpm_s = self._bpm_score(candidate_bpm, anchor_bpms) if has_bpm_data else 0
+            key_s = self._key_score(candidate_key, anchor_keys) if has_key_data else 0
             artist_s = self._artist_score(candidate, anchors)
 
             # 多样性在排序时逐步计算，这里先给满分
             div_s = 100.0
 
             total = (
-                bpm_s * self.bpm_weight
-                + key_s * self.key_weight
-                + artist_s * self.artist_weight
-                + div_s * self.diversity_weight
+                bpm_s * weights.get("bpm", 0)
+                + key_s * weights.get("key", 0)
+                + artist_s * weights["artist"]
+                + div_s * weights["diversity"]
             )
 
             reasons = []

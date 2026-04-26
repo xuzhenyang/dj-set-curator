@@ -81,6 +81,10 @@ def create(
         True, "--expand/--no-expand",
         help="候选不足时启用级联扩展（用候选歌曲作为二级锚点继续搜索）",
     ),
+    arrange_mode: str = typer.Option(
+        "flat", "--arrange", "-r",
+        help="能量曲线编排模式: flat(均匀)/warm-up(渐进)/peak-mid(中段高潮)/rollercoaster(起伏)/climax-end(结尾高潮)",
+    ),
 ):
     """基于锚点歌曲创建 DJ Set 歌单"""
 
@@ -111,6 +115,7 @@ def create(
                         target_count=count,
                         diversity_ratio=diversity,
                         enable_expand=expand,
+                        arrange_mode=arrange_mode,
                     )
                 except ValueError as e:
                     console.print(f"[bold red]输入错误: {e}[/bold red]")

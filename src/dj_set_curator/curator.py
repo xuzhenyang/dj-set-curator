@@ -5,9 +5,11 @@ from typing import Optional
 
 from dj_set_curator.anchor import AnchorAnalyzer
 from dj_set_curator.audio_analyzer import AudioAnalyzer
+from dj_set_curator.arranger import EnergyArcArranger
 from dj_set_curator.filters import SongFilter
 from dj_set_curator.models import AnchorSong, ScoredSong
 from dj_set_curator.mcp_client import CloudMusicMCPClient
+from dj_set_curator.sources import MultiSourceCollector
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,7 @@ class DJSetCurator:
         target_count: int = 20,
         diversity_ratio: float = 0.3,
         enable_expand: bool = True,
+        arrange_mode: str = "flat",
     ) -> dict:
         """
         构建歌单的主流程
@@ -125,6 +128,7 @@ class DJSetCurator:
             target_count: 目标歌曲数量
             diversity_ratio: 多样性比例（0-1），控制是否混入非相似歌曲
             enable_expand: 是否启用级联扩展（候选不足时用二级锚点扩充）
+            arrange_mode: 能量曲线编排模式 (flat/warm-up/peak-mid/rollercoaster/climax-end)
 
         Returns:
             {
@@ -162,17 +166,24 @@ class DJSetCurator:
                         anchor.name, anchor.bpm, anchor.key,
                     )
 
-        # 2. 获取相似推荐（每个锚点分别获取）
-        all_candidates = []
-        for anchor in anchors:
-            logger.info("获取锚点 '%s' 的相似推荐...", anchor.name)
-            similar = await self.mcp.get_similar_songs(anchor.id, limit=30)
-            logger.info("锚点 '%s' 获得 %d 首相似推荐", anchor.name, len(similar))
-            all_candidates.extend(similar)
+        # 2. 多源采集候选歌曲
+        collector = MultiSourceCollector(self.mcp)
+        # 将 AnchorSong 转换为 dict 格式，并补充 artist_id / album_id
+        anchor_dicts = []
+        for a in anchors:
+            ad = {"id": a.id, "name": a.name, "artist": a.artist}
+            try:
+                detail = await self.mcp.get_song_detail(a.id)
+                if isinstance(detail, dict):
+                    ad["artist_id"] = detail.get("artist_id")
+                    ad["album_id"] = detail.get("album_id")
+            except Exception as e:
+                logger.warning("获取锚点详情失败: %s - %s", a.name, e)
+            anchor_dicts.append(ad)
+        all_candidates = await collector.collect(anchor_dicts)
 
         # 3. 去重 + 移除锚点本身
-        unique_candidates = self._deduplicate(all_candidates)
-        unique_candidates = self._remove_anchors(unique_candidates, anchors)
+        unique_candidates = self._remove_anchors(all_candidates, anchors)
         logger.info("去重后候选歌曲: %d 首", len(unique_candidates))
 
         if not unique_candidates:
@@ -210,11 +221,18 @@ class DJSetCurator:
         # 6. 评分排序
         scored = self.filter.score_candidates(unique_candidates, anchors)
 
-        # 6. 应用多样性：按 diversity_ratio 混入一些分数较低但风格不同的歌曲
+        # 7. 应用多样性：按 diversity_ratio 混入一些分数较低但风格不同的歌曲
         selected = self._apply_diversity(scored, target_count, diversity_ratio)
 
         if not selected:
             raise RuntimeError("筛选后没有符合条件的歌曲")
+
+        # 8. 能量曲线编排
+        if arrange_mode != "flat":
+            arranger = EnergyArcArranger(self.mcp, arc_mode=arrange_mode)
+            selected = await arranger.arrange(
+                selected, bpm_tolerance=self.filter.bpm_tolerance
+            )
 
         # 7. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
         anchor_ids = [a.id for a in anchors]
