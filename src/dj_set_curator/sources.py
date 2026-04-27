@@ -343,32 +343,22 @@ class MultiSourceCollector:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
                     return source_name, []
 
-            # 使用 asyncio.wait 彻底隔离超时任务（return_exceptions=True 避免一个失败影响全部）
-            tasks = [asyncio.create_task(collect_from_source(s)) for s in self.sources]
-            done, pending = await asyncio.wait(tasks, timeout=35.0, return_when=asyncio.ALL_COMPLETED)
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
-            results = []
-            for task in done:
-                try:
-                    results.append(task.result())
-                except Exception as e:
-                    logger.warning("来源任务异常: %s", e)
-                    results.append(("Unknown", []))
-
-            for source_name, tracks in results:
+            # 使用 asyncio.gather + return_exceptions=True 隔离失败
+            results = await asyncio.gather(
+                *[collect_from_source(s) for s in self.sources],
+                return_exceptions=True
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning("来源任务异常: %s", result)
+                    continue
+                source_name, tracks = result
                 all_candidates.extend(tracks)
-                per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
+                per_source_stats[source_name] = len(tracks)
 
         # 去重
-        unique = self._deduplicate(all_candidates)
-        logger.info(
-            "多源采集完成: 原始 %d 首, 去重后 %d 首 | 各源统计: %s",
-            len(all_candidates), len(unique), per_source_stats,
-        )
-        return unique
+        unique_candidates = self._deduplicate(all_candidates)
+        logger.info("多源采集完成: %d 首候选（去重前 %d 首）", len(unique_candidates), len(all_candidates))
+        for source_name, count in per_source_stats.items():
+            logger.info("  - %s: %d 首", source_name, count)
+        return unique_candidates

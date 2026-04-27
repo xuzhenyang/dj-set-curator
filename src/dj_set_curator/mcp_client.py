@@ -79,36 +79,28 @@ class CloudMusicMCPClient:
         for attempt in range(max_retries + 1):
             try:
                 logger.debug("Calling tool %s with args %s (attempt %d/%d)", tool_name, arguments, attempt + 1, max_retries + 1)
-                result = await asyncio.wait_for(
-                    self.session.call_tool(tool_name, arguments=arguments),
-                    timeout=30.0
-                )
+                result = await self.session.call_tool(tool_name, arguments=arguments)
                 parsed = self._parse_result(result)
 
                 # 检查是否返回错误文本
                 if isinstance(parsed, str):
                     if "未登录" in parsed:
                         logger.warning("Tool %s returned '未登录': %s", tool_name, parsed)
-                        # 未登录不重试，直接返回
                         return parsed
                     if "失败" in parsed or "错误" in parsed:
                         logger.warning("Tool %s returned error-like response: %s", tool_name, parsed)
 
                 return parsed
 
-            except asyncio.TimeoutError:
-                logger.warning("Tool %s timeout (attempt %d/%d)", tool_name, attempt + 1, max_retries + 1)
-                last_error = f"调用超时: {tool_name}"
             except Exception as e:
                 logger.warning("Tool %s error (attempt %d/%d): %s", tool_name, attempt + 1, max_retries + 1, e)
                 last_error = str(e)
 
             if attempt < max_retries:
-                wait_time = 2 ** attempt  # 指数退避: 1s, 2s
+                wait_time = 2 ** attempt
                 logger.info("Retrying %s in %ds...", tool_name, wait_time)
                 await asyncio.sleep(wait_time)
 
-        # 所有重试都失败了
         logger.error("Tool %s failed after %d attempts: %s", tool_name, max_retries + 1, last_error)
         raise RuntimeError(f"{tool_name} 调用失败: {last_error}")
 
