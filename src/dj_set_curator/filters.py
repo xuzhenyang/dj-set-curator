@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Optional
 
+from dj_set_curator.genre_resolver import GenreResolver, genre_compatibility_score
 from dj_set_curator.models import AnchorSong, ScoredSong, Song
 
 logger = logging.getLogger(__name__)
@@ -55,8 +56,9 @@ class SongFilter:
         # 可配置的权重
         bpm_weight: float = 0.25,
         key_weight: float = 0.30,
-        artist_weight: float = 0.25,
-        diversity_weight: float = 0.20,
+        artist_weight: float = 0.20,
+        diversity_weight: float = 0.15,
+        genre_weight: float = 0.20,
     ):
         self.bpm_tolerance = bpm_tolerance
         self.key_match_priority = key_match_priority
@@ -65,6 +67,9 @@ class SongFilter:
         self.key_weight = key_weight
         self.artist_weight = artist_weight
         self.diversity_weight = diversity_weight
+        self.genre_weight = genre_weight
+        self.genre_threshold = 30.0  # 曲风兼容性低于此值时大幅惩罚
+        self._genre_resolver = GenreResolver()
 
     def _extract_bpm(self, song: Song) -> Optional[float]:
         """从歌曲信息中提取 BPM（如有）"""
@@ -237,6 +242,7 @@ class SongFilter:
             available_weights["key"] = self.key_weight
         available_weights["artist"] = self.artist_weight
         available_weights["diversity"] = self.diversity_weight
+        available_weights["genre"] = self.genre_weight
 
         total_weight = sum(available_weights.values())
         weights = {k: v / total_weight for k, v in available_weights.items()}
@@ -253,11 +259,12 @@ class SongFilter:
                     weights[k] += excess / len(other_keys)
 
         logger.debug(
-            "动态权重: BPM=%s%%, Key=%s%%, Artist=%s%%, Diversity=%s%%",
+            "动态权重: BPM=%s%%, Key=%s%%, Artist=%s%%, Diversity=%s%%, Genre=%s%%",
             round(weights.get("bpm", 0) * 100),
             round(weights.get("key", 0) * 100),
             round(weights["artist"] * 100),
             round(weights["diversity"] * 100),
+            round(weights.get("genre", 0) * 100),
         )
 
         scored = []
@@ -272,12 +279,24 @@ class SongFilter:
             # 多样性：基于已评分列表逐步计算
             div_s = self._diversity_score(candidate, scored)
 
-            total = (
+            # 曲风兼容性
+            anchor_genres = self._genre_resolver.get_anchor_genres(anchors)
+            candidate_genres = candidate.genre_tags if candidate.genre_tags else self._genre_resolver.resolve(candidate)
+            genre_s = genre_compatibility_score(candidate_genres, anchor_genres)
+
+            base_total = (
                 bpm_s * weights.get("bpm", 0)
                 + key_s * weights.get("key", 0)
                 + artist_s * weights["artist"]
                 + div_s * weights["diversity"]
+                + genre_s * weights.get("genre", 0)
             )
+
+            # 曲风硬过滤：兼容性过低时大幅惩罚
+            if genre_s < self.genre_threshold and candidate_genres:
+                total = base_total * 0.3  # 大幅降分
+            else:
+                total = base_total
 
             reasons = []
             if candidate_bpm is not None and anchor_bpms:
@@ -291,6 +310,12 @@ class SongFilter:
                     reasons.append("调性兼容")
             if artist_s >= 100:
                 reasons.append("同艺术家")
+            if genre_s >= 80:
+                reasons.append("曲风匹配")
+            elif genre_s >= 50:
+                reasons.append("曲风兼容")
+            elif genre_s < 30 and candidate_genres:
+                reasons.append("曲风差异")
 
             scored.append(
                 ScoredSong(

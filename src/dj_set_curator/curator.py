@@ -11,6 +11,7 @@ from dj_set_curator.deduplicator import Deduplicator
 from dj_set_curator.energy_heuristics import estimate_energy
 from dj_set_curator.expansion import CascadeExpander
 from dj_set_curator.filters import SongFilter
+from dj_set_curator.genre_resolver import GenreResolver
 from dj_set_curator.models import AnchorSong, ScoredSong, Song
 from dj_set_curator.mcp_client import CloudMusicMCPClient
 from dj_set_curator.playlist_naming import format_playlist_name
@@ -142,6 +143,19 @@ class DJSetCurator:
             raise RuntimeError(
                 "未获取到任何候选歌曲，请检查锚点歌曲是否有效或 MCP Server 登录状态"
             )
+
+        # 4.5 解析曲风标签（所有候选 + 锚点）
+        t0 = time.time()
+        genre_resolver = GenreResolver()
+        for candidate in unique_candidates:
+            candidate.genre_tags = genre_resolver.resolve(candidate)
+        for anchor in anchors:
+            if not anchor.genre_tags:
+                anchor.genre_tags = genre_resolver.resolve(
+                    Song(id=anchor.id, name=anchor.name, artist=anchor.artist)
+                )
+        logger.info("曲风解析完成: %d 首候选", len(unique_candidates))
+        logger.info("[计时] 曲风解析: %.2fs", time.time() - t0)
 
         # 5. 级联扩展（如启用且候选不足）
         if enable_expand and len(unique_candidates) < target_count:

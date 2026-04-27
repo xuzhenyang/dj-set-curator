@@ -5,6 +5,13 @@ from typing import Optional
 
 
 @dataclass
+class GenreInfo:
+    """曲风信息"""
+    tags: list[str] = field(default_factory=list)
+    source: str = ""  # "builtin", "lastfm", "keywords", "unknown"
+
+
+@dataclass
 class Song:
     """候选歌曲标准化数据结构"""
 
@@ -14,7 +21,7 @@ class Song:
     bpm: Optional[float] = None
     key: Optional[str] = None
     energy: Optional[float] = None
-    genre: Optional[str] = None
+    genre_tags: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Song":
@@ -26,7 +33,7 @@ class Song:
             bpm=data.get("bpm"),
             key=data.get("key"),
             energy=data.get("energy"),
-            genre=data.get("genre"),
+            genre_tags=data.get("genre_tags", []),
         )
 
     def to_dict(self) -> dict:
@@ -38,7 +45,7 @@ class Song:
             "bpm": self.bpm,
             "key": self.key,
             "energy": self.energy,
-            "genre": self.genre,
+            "genre_tags": self.genre_tags,
         }
 
     def __repr__(self) -> str:
