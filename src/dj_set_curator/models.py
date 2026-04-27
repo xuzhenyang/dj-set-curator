@@ -46,16 +46,8 @@ class Song:
 
 
 @dataclass
-class AnchorSong:
-    """锚点歌曲标准化数据结构"""
-
-    id: str
-    name: str
-    artist: str
-    bpm: Optional[float] = None
-    key: Optional[str] = None
-    energy: Optional[float] = None
-    genre: Optional[str] = None
+class AnchorSong(Song):
+    """锚点歌曲 - 继承 Song，语义上表示用户指定的起点歌曲"""
 
     def __repr__(self) -> str:
         return f"AnchorSong({self.name} - {self.artist}, id={self.id})"

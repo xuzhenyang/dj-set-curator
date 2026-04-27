@@ -1,6 +1,7 @@
 """过渡评分引擎 - DJ-proven 的 pair-wise transition scoring"""
 
 import logging
+import re
 from typing import Optional, Union
 
 from dj_set_curator.filters import SongFilter
@@ -77,8 +78,6 @@ class TransitionScorer:
         """
         if curr_key is None or next_key is None:
             return 50.0
-
-        import re
 
         distance = self.filter._key_distance(curr_key, next_key)
 

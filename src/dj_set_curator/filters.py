@@ -269,8 +269,8 @@ class SongFilter:
             key_s = self._key_score(candidate_key, anchor_keys) if has_key_data else 0
             artist_s = self._artist_score(candidate, anchors)
 
-            # 多样性在排序时逐步计算，这里先给满分
-            div_s = 100.0
+            # 多样性：基于已评分列表逐步计算
+            div_s = self._diversity_score(candidate, scored)
 
             total = (
                 bpm_s * weights.get("bpm", 0)

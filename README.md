@@ -1,8 +1,8 @@
-# DJ Set Curator 🎧
+# DJ Set Curator
 
 基于锚点歌曲的智能 DJ 选曲工具，调用网易云音乐 MCP Server 自动构建**可混音的 DJ Set 歌单**。
 
-> v0.2.0 核心升级：从"相似歌曲推荐"进化为"过渡感知的 DJ Set 构建器"
+> v0.3.0 核心升级：代码架构重构 + 全模块质量改进
 
 ## 功能特性
 
@@ -165,7 +165,7 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 
 ## 引擎架构
 
-### 选曲流程（v0.2.1）
+### 选曲流程（v0.3.0）
 
 ```
 锚点歌曲
@@ -289,15 +289,19 @@ dj-set-curator/
 │   ├── __main__.py          # python -m 入口
 │   ├── cli.py               # CLI 界面
 │   ├── config.py            # 配置管理（环境变量/配置文件）
-│   ├── mcp_client.py        # MCP Client 封装（重试+降级）
-│   ├── anchor.py            # 锚点歌曲解析
-│   ├── curator.py           # 选曲引擎核心（v0.2.1 全量分析+状态机）
-│   ├── filters.py           # 预过滤引擎（Camelot Wheel + BPM）
+│   ├── mcp_client.py        # MCP Client 封装（重试+错误处理）
+│   ├── anchor.py            # 锚点歌曲解析（并行）
+│   ├── curator.py           # 选曲引擎核心（ orchestrator ）
+│   ├── filters.py           # 预过滤引擎（Camelot Wheel + BPM + 多样性）
 │   ├── transition.py        # Pair-wise 过渡评分 + 贪心序列构建
 │   ├── sources.py           # 多源候选采集器（串行+超时保护）
 │   ├── arranger.py          # 能量分析器（librosa RMS）
-│   ├── audio_analyzer.py    # 音频分析（BPM/Key，librosa）
-│   └── models.py            # 数据模型
+│   ├── audio_analyzer.py    # 音频分析（BPM/Key，librosa，异步下载）
+│   ├── deduplicator.py      # 去重工具（ID/名称/锚点）
+│   ├── energy_heuristics.py # 能量启发式估计
+│   ├── expansion.py         # 级联扩展器
+│   ├── playlist_naming.py   # 歌单命名格式
+│   └── models.py            # 数据模型（Song / AnchorSong / ScoredSong）
 ├── scripts/
 │   └── login.py             # 独立二维码登录脚本
 ├── tests/

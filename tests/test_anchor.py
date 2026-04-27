@@ -3,6 +3,7 @@
 import pytest
 
 from dj_set_curator.anchor import AnchorAnalyzer, AnchorSong
+from dj_set_curator.models import Song
 
 
 class TestIsSongId:
@@ -61,8 +62,11 @@ class TestResolveAnchor:
         analyzer = AnchorAnalyzer()
 
         class FakeMCP:
+            async def get_song_detail(self, song_id):
+                return {"id": 29732235, "name": "Windowlicker", "artist": "Aphex Twin"}
+
             async def search_song(self, keyword):
-                return [{"id": 29732235, "name": "Windowlicker", "artist": "Aphex Twin"}]
+                return [Song(id="29732235", name="Windowlicker", artist="Aphex Twin")]
 
         mcp = FakeMCP()
         result = await analyzer.resolve_anchor("29732235", mcp)
@@ -76,7 +80,7 @@ class TestResolveAnchor:
         class FakeMCP:
             async def search_song(self, keyword):
                 return [
-                    {"id": "1", "name": "Windowlicker", "artist": "Aphex Twin"},
+                    Song(id="1", name="Windowlicker", artist="Aphex Twin"),
                 ]
 
         mcp = FakeMCP()
@@ -89,8 +93,8 @@ class TestResolveAnchor:
         class FakeMCP:
             async def search_song(self, keyword):
                 return [
-                    {"id": "1", "name": "Roygbiv", "artist": "Boards of Canada"},
-                    {"id": "2", "name": "Roygbiv Cover", "artist": "Someone Else"},
+                    Song(id="1", name="Roygbiv", artist="Boards of Canada"),
+                    Song(id="2", name="Roygbiv Cover", artist="Someone Else"),
                 ]
 
         mcp = FakeMCP()
@@ -125,9 +129,12 @@ class TestResolveMultiple:
         calls = []
 
         class FakeMCP:
+            async def get_song_detail(self, song_id):
+                return {"id": song_id, "name": f"Song {song_id}", "artist": "Artist"}
+
             async def search_song(self, keyword):
                 calls.append(keyword)
-                return [{"id": keyword, "name": f"Song {keyword}", "artist": "Artist"}]
+                return [Song(id=keyword, name=f"Song {keyword}", artist="Artist")]
 
         mcp = FakeMCP()
         results = await analyzer.resolve_multiple(["111", "222"], mcp)

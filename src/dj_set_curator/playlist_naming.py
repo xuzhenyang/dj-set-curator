@@ -1,12 +1,12 @@
-"""歌单命名 - 方案 E 格式"""
+"""歌单命名模块"""
 
 from typing import Optional
 
 from dj_set_curator.models import AnchorSong
 
 
-def format_name(playlist_name: Optional[str], anchors: list[AnchorSong], arrange_mode: str) -> str:
-    """生成歌单名称（网易云 API 不支持 Emoji）"""
+def format_playlist_name(playlist_name: Optional[str], anchors: list[AnchorSong], arrange_mode: str) -> str:
+    """生成方案 E 格式的歌单名称（网易云 API 不支持 Emoji）"""
     mode_display = {
         "flat": "Flat",
         "warm-up": "Warm Up",

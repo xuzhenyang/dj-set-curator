@@ -1,5 +1,6 @@
 """锚点歌曲分析模块"""
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -95,9 +96,13 @@ class AnchorAnalyzer:
     async def resolve_multiple(
         self, queries: list[str], mcp_client: CloudMusicMCPClient
     ) -> list[AnchorSong]:
-        """批量解析多个锚点"""
-        anchors = []
-        for query in queries:
-            anchor = await self.resolve_anchor(query, mcp_client)
-            anchors.append(anchor)
-        return anchors
+        """批量解析多个锚点（并行）"""
+        tasks = [self.resolve_anchor(q, mcp_client) for q in queries]
+        anchors = await asyncio.gather(*tasks, return_exceptions=True)
+        # 过滤掉异常
+        result = []
+        for i, a in enumerate(anchors):
+            if isinstance(a, Exception):
+                raise ValueError(f"解析锚点 '{queries[i]}' 失败: {a}")
+            result.append(a)
+        return result

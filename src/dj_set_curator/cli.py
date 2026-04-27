@@ -16,12 +16,6 @@ from dj_set_curator.curator import DJSetCurator
 from dj_set_curator.mcp_client import CloudMusicMCPClient
 from dj_set_curator.config import get_mcp_server_command
 
-# 配置日志
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-
 app = typer.Typer(
     name="dj-curator",
     help="基于锚点歌曲的智能 DJ 选曲工具",
@@ -221,4 +215,8 @@ def version():
 
 def main():
     """CLI 入口"""
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     app()

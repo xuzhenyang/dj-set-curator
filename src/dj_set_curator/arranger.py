@@ -1,5 +1,6 @@
 """能量曲线编排器 - DJ Set 能量曲线编排与 BPM 渐变"""
 
+import asyncio
 import logging
 import os
 import urllib.request
@@ -20,14 +21,18 @@ class EnergyAnalyzer:
     def __init__(self, mcp_client):
         self.mcp = mcp_client
 
-    def _download_audio(self, song_id: str, url: str) -> str:
-        """下载音频片段到缓存目录"""
+    def _download_audio_sync(self, song_id: str, url: str) -> str:
+        """同步下载音频片段到缓存目录（在 to_thread 中执行）"""
         segments_dir = get_audio_segments_dir()
         local_path = os.path.join(segments_dir, f"{song_id}.mp3")
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             return local_path
         urllib.request.urlretrieve(url, local_path)
         return local_path
+
+    async def _download_audio(self, song_id: str, url: str) -> str:
+        """异步下载音频片段（不阻塞事件循环）"""
+        return await asyncio.to_thread(self._download_audio_sync, song_id, url)
 
     async def analyze_energy(self, song_id: str) -> Optional[float]:
         """分析歌曲能量（0-100），返回 None 表示失败"""
@@ -36,8 +41,8 @@ class EnergyAnalyzer:
             url = audio_info.get("url")
             if not url:
                 return None
-            local_path = self._download_audio(song_id, url)
-            y, sr = librosa.load(local_path, duration=30)
+            local_path = await self._download_audio(song_id, url)
+            y, sr = await asyncio.to_thread(librosa.load, local_path, duration=30)
             rms = librosa.feature.rms(y=y)[0]
             energy = float(np.mean(rms))
             # 归一化到 0-100（基于经验阈值）

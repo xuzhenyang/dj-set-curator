@@ -1,5 +1,6 @@
 """音频分析模块 - 使用 librosa 分析 BPM 和调性"""
 
+import asyncio
 import json
 import logging
 import os
@@ -12,6 +13,8 @@ from typing import Optional
 
 import librosa
 import numpy as np
+
+from dj_set_curator.models import Song
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +114,17 @@ class AudioAnalyzer:
         return None
 
     def _set_cached(self, song_id: str, result: dict):
-        """写入分析结果缓存"""
+        """写入分析结果缓存（内存中，不立即写磁盘）"""
         if not self.enable_cache:
             return
         self._cache[str(song_id)] = result
+
+    def flush_cache(self):
+        """将缓存持久化到磁盘"""
         self._save_cache()
 
-    def _download_audio(self, song_id: str, url: str) -> str:
-        """下载音频片段到缓存目录，返回本地路径"""
+    def _download_audio_sync(self, song_id: str, url: str) -> str:
+        """同步下载音频片段到缓存目录（在 to_thread 中执行）"""
         segments_dir = get_audio_segments_dir()
         local_path = os.path.join(segments_dir, f"{song_id}.mp3")
 
@@ -131,6 +137,10 @@ class AudioAnalyzer:
         urllib.request.urlretrieve(url, local_path)
         logger.info("下载完成: %s (%d bytes)", song_id, os.path.getsize(local_path))
         return local_path
+
+    async def _download_audio(self, song_id: str, url: str) -> str:
+        """异步下载音频片段（不阻塞事件循环）"""
+        return await asyncio.to_thread(self._download_audio_sync, song_id, url)
 
     def _analyze_file(self, audio_path: str) -> dict:
         """使用 librosa 分析本地音频文件"""
@@ -238,8 +248,8 @@ class AudioAnalyzer:
 
         # 3. 下载并分析
         try:
-            local_path = self._download_audio(song_id, url)
-            result = self._analyze_file(local_path)
+            local_path = await self._download_audio(song_id, url)
+            result = await asyncio.to_thread(self._analyze_file, local_path)
             self._set_cached(song_id, result)
             logger.info(
                 "音频分析完成: %s -> BPM=%s, Key=%s, Camelot=%s",
@@ -249,3 +259,85 @@ class AudioAnalyzer:
         except Exception as e:
             logger.warning("音频分析失败: %s - %s", song_id, e)
             return None
+
+
+class BatchAudioAnalyzer:
+    """批量音频分析器"""
+
+    def __init__(self, audio_analyzer, status_callback=None):
+        self.analyzer = audio_analyzer
+        self._status = status_callback
+
+    async def analyze_songs_batch(
+        self,
+        songs: list[Song],
+        t_analysis_start: float,
+        time_limit: float = 120.0,
+    ) -> tuple[int, int]:
+        """批量分析歌曲 BPM/Key，返回 (成功数, 跳过数)"""
+        to_analyze = []
+        for song in songs:
+            cid = str(song.id)
+            has_bpm = song.bpm is not None
+            has_key = song.key is not None
+            if not has_bpm or not has_key:
+                to_analyze.append((song, cid, has_bpm, has_key))
+
+        if not to_analyze:
+            return 0, 0
+
+        async def _analyze_one(item):
+            song, cid, has_bpm, has_key = item
+            try:
+                analysis = await asyncio.wait_for(
+                    self.analyzer.analyze_song(cid),
+                    timeout=20.0,
+                )
+                if analysis:
+                    if not has_bpm:
+                        song.bpm = analysis.get("bpm")
+                    if not has_key:
+                        song.key = analysis.get("camelot") or analysis.get("key")
+                    if analysis.get("bpm"):
+                        song.energy = analysis["bpm"] * 0.5
+                    return True
+            except asyncio.TimeoutError:
+                logger.warning("音频分析超时: %s", cid)
+            except Exception:
+                pass
+            return False
+
+        analyzed_count = 0
+        skipped_count = 0
+        batch_size = 10
+        total_batches = (len(to_analyze) + batch_size - 1) // batch_size
+        for i in range(0, len(to_analyze), batch_size):
+            if time.time() - t_analysis_start > time_limit:
+                skipped_count = len(to_analyze) - i
+                logger.warning(
+                    "[进度] 音频分析达到 %ds 上限，跳过剩余 %d 首",
+                    int(time_limit), skipped_count,
+                )
+                break
+
+            batch = to_analyze[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            results = await asyncio.gather(*[_analyze_one(item) for item in batch])
+            analyzed_count += sum(1 for r in results if r)
+            if self._status:
+                self._status(
+                    stage="analysis",
+                    progress=30 + int(40 * analyzed_count / max(len(to_analyze), 1)),
+                    message=f"音频分析 ({analyzed_count}/{len(to_analyze)}首)",
+                )
+            logger.info(
+                "[进度] 音频分析 %d/%d 批完成 (%d/%d 首), 成功 %d 首, 已用 %.1fs",
+                batch_num,
+                total_batches,
+                min(i + batch_size, len(to_analyze)),
+                len(to_analyze),
+                analyzed_count,
+                time.time() - t_analysis_start,
+            )
+
+        return analyzed_count, skipped_count

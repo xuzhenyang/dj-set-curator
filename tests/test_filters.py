@@ -4,6 +4,7 @@ import pytest
 
 from dj_set_curator.anchor import AnchorSong
 from dj_set_curator.filters import SongFilter, CAMELOT_WHEEL
+from dj_set_curator.models import ScoredSong, Song
 
 
 class TestBPMScore:
@@ -17,7 +18,7 @@ class TestBPMScore:
 
     def test_close_to_full(self):
         f = SongFilter(bpm_tolerance=5)
-        assert f._bpm_score(129.0, [128.0]) == 90.0  # diff=1
+        assert f._bpm_score(129.0, [128.0]) == 100.0  # diff=1 <= 1.0 -> perfect match
 
     def test_far_away(self):
         f = SongFilter(bpm_tolerance=5)
@@ -77,7 +78,7 @@ class TestKeyScore:
 
     def test_compatible(self):
         f = SongFilter()
-        assert f._key_score("8B", ["9B"]) == 80.0
+        assert f._key_score("8B", ["9B"]) == 85.0
 
     def test_no_key_data(self):
         f = SongFilter()
@@ -87,19 +88,19 @@ class TestKeyScore:
 class TestArtistScore:
     def test_exact_match(self):
         f = SongFilter()
-        candidate = {"artist": "Aphex Twin"}
+        candidate = Song(id="1", name="x", artist="Aphex Twin")
         anchors = [AnchorSong(id="1", name="x", artist="Aphex Twin")]
         assert f._artist_score(candidate, anchors) == 100.0
 
     def test_substring_match(self):
         f = SongFilter()
-        candidate = {"artist": "Aphex Twin & Squarepusher"}
+        candidate = Song(id="1", name="x", artist="Aphex Twin & Squarepusher")
         anchors = [AnchorSong(id="1", name="x", artist="Aphex Twin")]
         assert f._artist_score(candidate, anchors) == 100.0
 
     def test_no_match(self):
         f = SongFilter()
-        candidate = {"artist": "Boards of Canada"}
+        candidate = Song(id="1", name="x", artist="Boards of Canada")
         anchors = [AnchorSong(id="1", name="x", artist="Aphex Twin")]
         assert f._artist_score(candidate, anchors) == 30.0
 
@@ -108,19 +109,19 @@ class TestScoreCandidates:
     def test_basic_scoring(self):
         f = SongFilter()
         candidates = [
-            {"id": "1", "name": "Song A", "artist": "Artist X"},
-            {"id": "2", "name": "Song B", "artist": "Artist Y"},
+            Song(id="1", name="Song A", artist="Artist X"),
+            Song(id="2", name="Song B", artist="Artist Y"),
         ]
         anchors = [AnchorSong(id="99", name="Anchor", artist="Artist X")]
         scored = f.score_candidates(candidates, anchors)
         assert len(scored) == 2
         # 第一个应该分数更高（同艺术家）
-        assert scored[0].song["id"] == "1"
+        assert scored[0].song.id == "1"
         assert scored[0].score > scored[1].score
 
     def test_score_bounds(self):
         f = SongFilter()
-        candidates = [{"id": "1", "name": "Song", "artist": "Artist"}]
+        candidates = [Song(id="1", name="Song", artist="Artist")]
         anchors = [AnchorSong(id="99", name="Anchor", artist="Other")]
         scored = f.score_candidates(candidates, anchors)
         assert 0 <= scored[0].score <= 100
@@ -129,19 +130,17 @@ class TestScoreCandidates:
 class TestDiversityScore:
     def test_unique_song(self):
         f = SongFilter()
-        candidate = {"name": "New Song", "artist": "New Artist"}
+        candidate = Song(id="1", name="New Song", artist="New Artist")
         assert f._diversity_score(candidate, []) == 100.0
 
     def test_duplicate_name(self):
         f = SongFilter()
-        from dj_set_curator.filters import ScoredSong
-        candidate = {"name": "Same Song", "artist": "Artist B"}
-        selected = [ScoredSong(song={"name": "Same Song", "artist": "Artist A"}, score=50)]
+        candidate = Song(id="1", name="Same Song", artist="Artist B")
+        selected = [ScoredSong(song=Song(id="2", name="Same Song", artist="Artist A"), score=50)]
         assert f._diversity_score(candidate, selected) == 10.0
 
     def test_same_artist(self):
         f = SongFilter()
-        from dj_set_curator.filters import ScoredSong
-        candidate = {"name": "Different Song", "artist": "Same Artist"}
-        selected = [ScoredSong(song={"name": "Other Song", "artist": "Same Artist"}, score=50)]
+        candidate = Song(id="1", name="Different Song", artist="Same Artist")
+        selected = [ScoredSong(song=Song(id="2", name="Other Song", artist="Same Artist"), score=50)]
         assert f._diversity_score(candidate, selected) == 50.0

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import sys
 from typing import Any, Optional
 
 from mcp import ClientSession, StdioServerParameters
@@ -42,10 +43,22 @@ class CloudMusicMCPClient:
             env=None,
         )
         self._client_context = stdio_client(server_params)
-        read, write = await self._client_context.__aenter__()
+        try:
+            read, write = await self._client_context.__aenter__()
+        except Exception:
+            self._client_context = None
+            raise
 
-        self._stdio_context = ClientSession(read, write)
-        self.session = await self._stdio_context.__aenter__()
+        try:
+            self._stdio_context = ClientSession(read, write)
+            self.session = await self._stdio_context.__aenter__()
+        except Exception:
+            # 清理已创建的 stdio_client context
+            await self._client_context.__aexit__(*sys.exc_info())
+            self._client_context = None
+            self._stdio_context = None
+            raise
+
         await self.session.initialize()
         logger.info("MCP Client connected to %s", self.server_command)
 
@@ -84,12 +97,15 @@ class CloudMusicMCPClient:
                 result = await self.session.call_tool(tool_name, arguments=arguments)
                 parsed = self._parse_result(result)
 
-                # 检查是否返回错误文本
-                if isinstance(parsed, str):
+                # 检查是否返回错误文本（仅当响应是纯文本且长度较短时）
+                if isinstance(parsed, str) and len(parsed) < 200:
                     if "未登录" in parsed:
                         logger.warning("Tool %s returned '未登录': %s", tool_name, parsed)
                         return parsed
-                    if "失败" in parsed or "错误" in parsed:
+                    # 避免误判：只在文本明显像错误消息时才警告
+                    error_indicators = ["失败:", "错误:", "exception", "error:", "failed"]
+                    lower = parsed.lower()
+                    if any(ind in lower for ind in error_indicators):
                         logger.warning("Tool %s returned error-like response: %s", tool_name, parsed)
 
                 return parsed
@@ -239,6 +255,18 @@ class CloudMusicMCPClient:
         if isinstance(result, list):
             return [Song.from_dict(d) for d in result]
         return []
+
+    async def get_audio_url(self, song_id: str) -> dict:
+        """获取歌曲音频下载链接，返回 {url, br, type, duration}"""
+        result = await self._call_tool(
+            "cloud_music_get_audio_url",
+            {"song_id": str(song_id)},
+        )
+        if isinstance(result, dict) and "url" in result:
+            return result
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"获取音频URL失败: {result}")
+        return {}
 
     async def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]):
         """批量添加歌曲到歌单"""

@@ -67,7 +67,7 @@ def get_mcp_server_command(cli_value: Optional[str] = None) -> str:
     3. 配置文件 mcp_server_command
     4. 默认 "cloud-music-mcp"
     """
-    if cli_value and cli_value != "cloud-music-mcp":
+    if cli_value is not None:
         return cli_value
 
     if env_value := os.environ.get("DJ_CURATOR_MCP_SERVER"):

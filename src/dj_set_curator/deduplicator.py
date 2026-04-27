@@ -1,4 +1,4 @@
-"""去重模块 - 按 ID、名称和锚点过滤歌曲"""
+"""去重工具 - 按 ID、名称、锚点去重"""
 
 from dj_set_curator.models import AnchorSong, Song
 
@@ -19,11 +19,17 @@ class Deduplicator:
         return result
 
     @staticmethod
-    def by_name(songs: list[Song]) -> list[Song]:
+    def remove_anchors(candidates: list[Song], anchors: list[AnchorSong]) -> list[Song]:
+        """从候选列表中移除锚点歌曲本身"""
+        anchor_ids = {a.id for a in anchors}
+        return [c for c in candidates if str(c.id) not in anchor_ids]
+
+    @staticmethod
+    def by_name(candidates: list[Song]) -> list[Song]:
         """按歌曲名+艺术家去重（忽略 ID，同名同 artist 视为重复）"""
         seen = set()
         result = []
-        for song in songs:
+        for song in candidates:
             name = song.name.lower().strip()
             artist = song.artist.lower().strip()
             key = f"{name}::{artist}"
@@ -31,9 +37,3 @@ class Deduplicator:
                 seen.add(key)
                 result.append(song)
         return result
-
-    @staticmethod
-    def remove_anchors(songs: list[Song], anchors: list[AnchorSong]) -> list[Song]:
-        """从候选列表中移除锚点歌曲本身"""
-        anchor_ids = {a.id for a in anchors}
-        return [s for s in songs if str(s.id) not in anchor_ids]
