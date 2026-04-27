@@ -1,88 +1,90 @@
-# Changelog
+# 更新日志
 
-All notable changes to this project will be documented in this file.
+本项目所有重要变更均记录于此。
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
+版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
 ## [0.3.0] - 2026-04-27
 
-### Added
+### 新增
 
-- `Song` dataclass in `models.py` with `from_dict()` / `to_dict()` helpers.
-- New extracted modules from the monolithic `curator.py`:
-  - `deduplicator.py` — ID/name/anchor deduplication
-  - `energy_heuristics.py` — BPM + song-name keyword heuristics
-  - `expansion.py` — cascade expander (secondary-anchor search)
-  - `playlist_naming.py` — auto playlist naming (`[DJ Curator] {mode} | {artists}`)
-- `get_audio_url()` method in `mcp_client.py` for precise energy analysis.
-- `flush_cache()` method in `AudioAnalyzer` for batch cache persistence.
+- `Song` 数据类，提供 `from_dict()` / `to_dict()` 工厂方法
+- 从 `curator.py` 拆分的独立模块：
+  - `deduplicator.py` — ID / 名称 / 锚点去重
+  - `energy_heuristics.py` — BPM + 歌名关键词启发式能量估算
+  - `expansion.py` — 级联扩展器（二级锚点搜索）
+  - `playlist_naming.py` — 歌单自动命名（`[DJ Curator] {模式} | {艺人}`）
+- `mcp_client.py` 新增 `get_audio_url()` 方法，支持精能量分析
+- `AudioAnalyzer` 新增 `flush_cache()`，批量分析结束后统一持久化缓存
 
-### Changed
+### 变更
 
-- **Architecture**: `curator.py` refactored from 422 lines to ~280 lines (pure orchestrator).
-- `AnchorSong` now inherits from `Song` instead of duplicating all fields.
-- All modules migrated from plain `dict` to `Song` / `ScoredSong` objects.
-- Anchor resolution (`anchor.py`) now runs in parallel via `asyncio.gather`.
-- `BatchAudioAnalyzer` now flushes cache once after the batch instead of after every song.
-- `EnergyAnalyzer` instance is reused across anchor analysis and post-selection analysis in `curator.py`.
+- **架构重构**：`curator.py` 从 422 行精简至约 280 行（纯编排器）
+- `AnchorSong` 改为继承 `Song`，消除字段重复
+- 全模块从 `dict` 迁移至 `Song` / `ScoredSong` 对象
+- 锚点解析改为 `asyncio.gather` 并行执行
+- `BatchAudioAnalyzer` 缓存写入策略：每首改为批量结束后统一 flush
+- `EnergyAnalyzer` 实例在锚点分析和入选后分析之间复用，避免重复下载
 
-### Fixed
+### 修复
 
-- **Critical**: Synchronous `urllib.request.urlretrieve` blocking the async event loop — now wrapped with `asyncio.to_thread` in both `audio_analyzer.py` and `arranger.py`.
-- **Critical**: MCP client resource leak — if `ClientSession.__aenter__()` fails, the `stdio_client` context is now properly cleaned up.
-- **Major**: Diversity score was hard-coded to `100.0` and never applied — now dynamically computed based on already-scored candidates.
-- **Major**: Fragile error detection in `_call_tool()` that matched `"失败"` / `"错误"` as substrings in normal song names — now uses specific error indicators and length guard.
-- **Minor**: Module-level `logging.basicConfig()` polluted log config for library consumers — moved to `cli.main()`.
-- **Minor**: `config.py` skipped explicit `--server cloud-music-mcp` due to `cli_value != "cloud-music-mcp"` check — now checks `cli_value is not None`.
-- **Minor**: `import re` inside `key_transition_score()` moved to module top in `transition.py`.
+- **严重**：`urllib.request.urlretrieve` 同步阻塞事件循环 —— 改为 `asyncio.to_thread` 包装（`audio_analyzer.py` + `arranger.py`）
+- **严重**：MCP client `connect()` 失败时子进程泄漏 —— 增加级联异常清理
+- **主要**：多样性评分硬编码为 `100.0` 完全未生效 —— 改为基于已评分列表动态计算
+- **主要**：`_call_tool()` 字符串子串匹配误判（歌曲名含"失败""错误"） —— 改为限定长度 + 具体错误关键词
+- **次要**：模块级 `logging.basicConfig()` 污染库用户日志 —— 移至 `cli.main()` 入口
+- **次要**：`config.py` 显式传 `--server cloud-music-mcp` 被跳过 —— 判断条件改为 `is not None`
+- **次要**：`transition.py` 函数内 `import re` —— 移至模块顶部
 
 ## [0.2.1] - 2026-04-25
 
-### Added
+### 新增
 
-- `--dry-run` flag for preview mode (show candidates & predicted selection without creating playlist).
-- Status machine in `DJSetCurator` (`_status` dict with stage / progress / message).
-- `config.py` supporting `~/.dj-set-curator/config.yaml` and env var `DJ_CURATOR_MCP_SERVER`.
-- 120-second soft timeout for audio analysis (skips remaining songs if exceeded).
-- MCP client retry with exponential backoff (2 attempts).
-- `--server` CLI option to override MCP server command.
-- Auto playlist naming: `[DJ Curator] {mode} | {artists}` (Scheme E).
-- Independent QR login script at `scripts/login.py`.
+- `--dry-run` 预览模式，只展示候选和预测选曲，不创建歌单
+- `DJSetCurator` 状态机（`stage` / `progress` / `message`）
+- `config.py` 配置管理，支持 `~/.dj-set-curator/config.yaml` + 环境变量 `DJ_CURATOR_MCP_SERVER`
+- 音频分析 120 秒软超时，超时自动跳过剩余歌曲
+- MCP client 指数退避重试（2 次）
+- `--server` CLI 参数覆盖 MCP server 命令
+- 歌单自动命名方案 E：`[DJ Curator] {模式} | {艺人}`
+- 独立扫码登录脚本 `scripts/login.py`
 
-### Fixed
+### 修复
 
-- **Critical**: `asyncio.gather` + `anyio` deadlock — switched from concurrent source collection to serial per-source collection with `asyncio.wait_for(..., timeout=30.0)`.
-- NetEase API rejects emoji in playlist names — removed emoji from auto-generated names.
-- UnboundLocalError for `time` import inside `build_playlist`.
+- **严重**：`asyncio.gather` + `anyio` 并发死锁 —— 改为串行逐源采集 + `asyncio.wait_for(..., 30.0)`
+- 网易云 API 拒绝 emoji —— 自动命名中移除 emoji
+- `build_playlist` 内重复 `import time` 导致 `UnboundLocalError`
 
-### Changed
+### 变更
 
-- Removed 25-song analysis limit — all candidates are now analyzed with batch=10 concurrency.
+- 移除 25 首分析上限，全量候选分析（batch=10 并发）
 
 ## [0.2.0] - 2026-04-24
 
-### Added
+### 新增
 
-- Transition-based DJ Set builder (v2.0):
-  - `TransitionScorer` with BPM / Key / Energy / Artist-penalty dimensions.
-  - `SequentialSelector` greedy sequence builder with 5 energy-curve modes (`flat`, `warm-up`, `peak-mid`, `rollercoaster`, `climax-end`).
-- Multi-source candidate collection (7 sources):
-  - `SimilarSource`, `ArtistTopSource`, `AlbumSource`, `DailyRecSource`, `TagSearchSource`, `GenreSearchSource`, `CrossArtistSource`.
-- Audio analysis pipeline:
-  - `AudioAnalyzer` with librosa (`beat_track` + `chroma_cqt`) for BPM/Key.
-  - `EnergyAnalyzer` with librosa RMS for precise energy.
-  - Cache system (`analysis_cache.json` + `audio_segments/`).
-- Pre-filtering with `SongFilter` (Camelot Wheel + BPM scoring + dynamic weights).
-- Cascade expansion when candidate pool is insufficient.
-- Anchor songs automatically placed at the start of the final playlist.
+- 过渡感知 DJ Set 构建器（v2.0）：
+  - `TransitionScorer`：BPM / Key / Energy / Artist 惩罚四维评分
+  - `SequentialSelector` 贪心序列构建，支持 5 种能量曲线（`flat` / `warm-up` / `peak-mid` / `rollercoaster` / `climax-end`）
+- 多源候选采集（7 个来源）：
+  - `SimilarSource` 相似推荐、`ArtistTopSource` 艺人热门、`AlbumSource` 同专辑
+  - `DailyRecSource` 每日推荐、`TagSearchSource` 标签搜索、`GenreSearchSource` 流派搜索
+  - `CrossArtistSource` 相似艺人（核心来源，keshi → Lauv / Demxntia / The Weeknd）
+- 音频分析管线：
+  - `AudioAnalyzer`：librosa `beat_track` + `chroma_cqt` 分析 BPM/Key
+  - `EnergyAnalyzer`：librosa RMS 精能量分析
+  - 缓存系统：`analysis_cache.json` + `audio_segments/`
+- `SongFilter` 预过滤（Camelot Wheel + BPM + 动态权重）
+- 级联扩展：候选不足时用推荐歌曲作为二级锚点继续搜索
+- 锚点歌曲自动置于歌单开头
 
 ## [0.1.0] - 2026-04-20
 
-### Added
+### 新增
 
-- Initial release.
-- CLI with `typer` and `rich`.
-- Basic anchor song resolution (by ID or "Artist - Song" search).
-- Similar-song-based playlist creation via MCP Server.
-- Simple deduplication and diversity controls.
+- 初始版本
+- `typer` + `rich` CLI
+- 锚点歌曲解析（ID 或 "艺人 - 歌名" 搜索）
+- 基于相似推荐的简单歌单创建
+- 基础去重和多样性控制
