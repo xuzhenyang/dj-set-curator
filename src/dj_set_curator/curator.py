@@ -297,10 +297,16 @@ class DJSetCurator:
         # 并发分析（最多 10 个并发）
         analyzed_count = 0
         batch_size = 10
+        total_batches = (len(to_analyze) + batch_size - 1) // batch_size
         for i in range(0, len(to_analyze), batch_size):
             batch = to_analyze[i:i+batch_size]
+            batch_num = i // batch_size + 1
             results = await asyncio.gather(*[_analyze_one(item) for item in batch])
             analyzed_count += sum(1 for r in results if r)
+            logger.info(
+                "[进度] 音频分析 %d/%d 批完成 (%d/%d 首), 成功 %d 首",
+                batch_num, total_batches, min(i + batch_size, len(to_analyze)), len(to_analyze), analyzed_count
+            )
 
         logger.info("音频分析完成: %d/%d 首成功，耗时 %.1fs", analyzed_count, len(to_analyze), time.time() - t_analysis_start)
 
