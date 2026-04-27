@@ -343,7 +343,23 @@ class MultiSourceCollector:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
                     return source_name, []
 
-            results = await asyncio.gather(*[collect_from_source(s) for s in self.sources])
+            # 使用 asyncio.wait 彻底隔离超时任务（return_exceptions=True 避免一个失败影响全部）
+            tasks = [asyncio.create_task(collect_from_source(s)) for s in self.sources]
+            done, pending = await asyncio.wait(tasks, timeout=35.0, return_when=asyncio.ALL_COMPLETED)
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            results = []
+            for task in done:
+                try:
+                    results.append(task.result())
+                except Exception as e:
+                    logger.warning("来源任务异常: %s", e)
+                    results.append(("Unknown", []))
 
             for source_name, tracks in results:
                 all_candidates.extend(tracks)

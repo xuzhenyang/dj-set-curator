@@ -27,6 +27,11 @@ class DJSetCurator:
         self.mcp = mcp_client
         self.anchor_analyzer = AnchorAnalyzer()
         self.filter = SongFilter(**(filter_config or {}))
+        self._status = {"stage": "idle", "progress": 0, "message": ""}
+
+    def get_status(self) -> dict:
+        """获取当前构建状态"""
+        return self._status.copy()
 
     @staticmethod
     def _deduplicate(songs: list[dict]) -> list[dict]:
@@ -172,6 +177,7 @@ class DJSetCurator:
         diversity_ratio: float = 0.8,
         enable_expand: bool = True,
         arrange_mode: str = "flat",
+        dry_run: bool = False,
     ) -> dict:
         """
         构建歌单的主流程（v2.0 - Transition-based selection）
@@ -179,6 +185,7 @@ class DJSetCurator:
         流程：锚点 → 多源采集 → 粗粒度能量估计 → 预过滤 → 贪心序列构建 → 创建歌单
         """
         total_start = time.time()
+        self._status = {"stage": "connecting", "progress": 5, "message": "连接 MCP Server..."}
         if not anchor_queries:
             raise ValueError("至少需要提供一个锚点歌曲")
 
@@ -186,6 +193,7 @@ class DJSetCurator:
         t0 = time.time()
         logger.info("正在解析 %d 个锚点歌曲...", len(anchor_queries))
         anchors = await self.anchor_analyzer.resolve_multiple(anchor_queries, self.mcp)
+        self._status = {"stage": "anchors", "progress": 15, "message": f"解析锚点 ({len(anchors)}首)"}
         logger.info("[计时] 解析锚点: %.2fs", time.time() - t0)
 
         # 生成最终歌单名称（方案 E）
@@ -241,6 +249,7 @@ class DJSetCurator:
                 logger.warning("获取锚点详情失败: %s - %s", a.name, e)
             anchor_dicts.append(ad)
         all_candidates = await collector.collect(anchor_dicts)
+        self._status = {"stage": "collection", "progress": 30, "message": f"多源采集 ({len(all_candidates)}首候选)"}
         logger.info("[计时] 多源采集: %.2fs", time.time() - t0)
 
         # 4. 去重 + 移除锚点本身 + 歌曲名去重
@@ -267,7 +276,7 @@ class DJSetCurator:
         for candidate in unique_candidates:
             candidate["energy"] = self._energy_heuristic(candidate)
 
-        # 对所有缺失 BPM/Key 的候选做音频分析（不限制数量）
+        # 对所有缺失 BPM/Key 的候选做音频分析（按优先级 + 120s 软超时）
         to_analyze = []
         for candidate in unique_candidates:
             cid = str(candidate.get("id", ""))
@@ -276,7 +285,11 @@ class DJSetCurator:
             if not has_bpm or not has_key:
                 to_analyze.append((candidate, cid, has_bpm, has_key))
 
-        logger.info("音频分析: %d 首候选中 %d 首需要分析（全量）", len(unique_candidates), len(to_analyze))
+        # 按能量接近锚点平均值排序（优先分析能量匹配度高的）
+        anchor_avg_energy = sum(a.energy for a in anchors if hasattr(a, "energy")) / max(len(anchors), 1)
+        to_analyze.sort(key=lambda x: abs(x[0].get("energy", 50) - anchor_avg_energy))
+
+        logger.info("音频分析: %d 首候选中 %d 首需要分析（按能量优先级排序）", len(unique_candidates), len(to_analyze))
 
         async def _analyze_one(item):
             candidate, cid, has_bpm, has_key = item
@@ -299,21 +312,35 @@ class DJSetCurator:
                 pass
             return False
 
-        # 并发分析（最多 10 个并发）
+        # 并发分析（最多 10 个并发），总时间上限 120 秒
+        ANALYSIS_TIME_LIMIT = 120.0
         analyzed_count = 0
+        skipped_count = 0
         batch_size = 10
         total_batches = (len(to_analyze) + batch_size - 1) // batch_size
         for i in range(0, len(to_analyze), batch_size):
+            if time.time() - t_analysis_start > ANALYSIS_TIME_LIMIT:
+                skipped_count = len(to_analyze) - i
+                logger.warning("[进度] 音频分析达到 %ds 上限，跳过剩余 %d 首", int(ANALYSIS_TIME_LIMIT), skipped_count)
+                break
+
             batch = to_analyze[i:i+batch_size]
             batch_num = i // batch_size + 1
             results = await asyncio.gather(*[_analyze_one(item) for item in batch])
             analyzed_count += sum(1 for r in results if r)
+            self._status = {
+                "stage": "analysis",
+                "progress": 30 + int(40 * analyzed_count / max(len(to_analyze), 1)),
+                "message": f"音频分析 ({analyzed_count}/{len(to_analyze)}首)",
+            }
             logger.info(
-                "[进度] 音频分析 %d/%d 批完成 (%d/%d 首), 成功 %d 首",
-                batch_num, total_batches, min(i + batch_size, len(to_analyze)), len(to_analyze), analyzed_count
+                "[进度] 音频分析 %d/%d 批完成 (%d/%d 首), 成功 %d 首, 已用 %.1fs",
+                batch_num, total_batches, min(i + batch_size, len(to_analyze)), len(to_analyze),
+                analyzed_count, time.time() - t_analysis_start
             )
 
-        logger.info("音频分析完成: %d/%d 首成功，耗时 %.1fs", analyzed_count, len(to_analyze), time.time() - t_analysis_start)
+        logger.info("音频分析完成: %d/%d 首成功, %d 首跳过, 耗时 %.1fs",
+                    analyzed_count, len(to_analyze), skipped_count, time.time() - t_analysis_start)
 
         # 7. 预过滤：用 SongFilter 过滤掉低分候选
         t0 = time.time()
@@ -335,6 +362,7 @@ class DJSetCurator:
         scorer = TransitionScorer(bpm_tolerance=self.filter.bpm_tolerance)
         selector = SequentialSelector(scorer, arrange_mode=arrange_mode)
         selected = selector.select(filtered_candidates, anchors, target_count)
+        self._status = {"stage": "selection", "progress": 80, "message": f"选曲构建 ({len(selected)}首)"}
         logger.info("[计时] 贪心序列构建: %.2fs", time.time() - t0)
 
         if not selected:
@@ -359,14 +387,21 @@ class DJSetCurator:
         track_ids = anchor_ids + selected_ids
 
         # 11. 创建歌单并添加
-        t0 = time.time()
-        logger.info("正在创建歌单 '%s'...", final_name)
-        playlist_id = await self.mcp.create_playlist(final_name)
-        logger.info("歌单创建成功，ID: %s", playlist_id)
+        if not dry_run:
+            t0 = time.time()
+            self._status = {"stage": "creating", "progress": 95, "message": "创建歌单..."}
+            logger.info("正在创建歌单 '%s'...", final_name)
+            playlist_id = await self.mcp.create_playlist(final_name)
+            logger.info("歌单创建成功，ID: %s", playlist_id)
 
-        await self.mcp.add_tracks_to_playlist(playlist_id, track_ids)
-        logger.info("已添加 %d 首歌曲到歌单（含 %d 首锚点）", len(track_ids), len(anchor_ids))
-        logger.info("[计时] 创建歌单: %.2fs", time.time() - t0)
+            await self.mcp.add_tracks_to_playlist(playlist_id, track_ids)
+            logger.info("已添加 %d 首歌曲到歌单（含 %d 首锚点）", len(track_ids), len(anchor_ids))
+            logger.info("[计时] 创建歌单: %.2fs", time.time() - t0)
+        else:
+            playlist_id = None
+            logger.info("[dry_run] 跳过创建歌单")
+
+        self._status = {"stage": "done", "progress": 100, "message": "完成"}
         logger.info("[计时] 总计: %.2fs", time.time() - total_start)
 
         avg_score = sum(s.score for s in selected) / len(selected) if selected else 0

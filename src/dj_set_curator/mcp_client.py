@@ -1,5 +1,6 @@
 """MCP Client 封装 - 与 cloud-music-mcp-extended 交互"""
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -69,20 +70,47 @@ class CloudMusicMCPClient:
                 return text
         return result
 
-    async def _call_tool(self, tool_name: str, arguments: dict) -> Any:
-        """底层工具调用，带错误处理"""
+    async def _call_tool(self, tool_name: str, arguments: dict, max_retries: int = 2) -> Any:
+        """底层工具调用，带重试和错误处理"""
         if not self.session:
             raise RuntimeError("MCP Client 未连接，请先调用 connect()")
 
-        logger.debug("Calling tool %s with args %s", tool_name, arguments)
-        result = await self.session.call_tool(tool_name, arguments=arguments)
-        parsed = self._parse_result(result)
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                logger.debug("Calling tool %s with args %s (attempt %d/%d)", tool_name, arguments, attempt + 1, max_retries + 1)
+                result = await asyncio.wait_for(
+                    self.session.call_tool(tool_name, arguments=arguments),
+                    timeout=30.0
+                )
+                parsed = self._parse_result(result)
 
-        # 检查是否返回错误文本
-        if isinstance(parsed, str) and ("失败" in parsed or "错误" in parsed or "未登录" in parsed):
-            logger.warning("Tool %s returned error-like response: %s", tool_name, parsed)
+                # 检查是否返回错误文本
+                if isinstance(parsed, str):
+                    if "未登录" in parsed:
+                        logger.warning("Tool %s returned '未登录': %s", tool_name, parsed)
+                        # 未登录不重试，直接返回
+                        return parsed
+                    if "失败" in parsed or "错误" in parsed:
+                        logger.warning("Tool %s returned error-like response: %s", tool_name, parsed)
 
-        return parsed
+                return parsed
+
+            except asyncio.TimeoutError:
+                logger.warning("Tool %s timeout (attempt %d/%d)", tool_name, attempt + 1, max_retries + 1)
+                last_error = f"调用超时: {tool_name}"
+            except Exception as e:
+                logger.warning("Tool %s error (attempt %d/%d): %s", tool_name, attempt + 1, max_retries + 1, e)
+                last_error = str(e)
+
+            if attempt < max_retries:
+                wait_time = 2 ** attempt  # 指数退避: 1s, 2s
+                logger.info("Retrying %s in %ds...", tool_name, wait_time)
+                await asyncio.sleep(wait_time)
+
+        # 所有重试都失败了
+        logger.error("Tool %s failed after %d attempts: %s", tool_name, max_retries + 1, last_error)
+        raise RuntimeError(f"{tool_name} 调用失败: {last_error}")
 
     async def check_status(self) -> dict:
         """检查登录状态"""

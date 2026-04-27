@@ -9,10 +9,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.live import Live
 from rich import box
 
 from dj_set_curator.curator import DJSetCurator
 from dj_set_curator.mcp_client import CloudMusicMCPClient
+from dj_set_curator.config import get_mcp_server_command
 
 # 配置日志
 logging.basicConfig(
@@ -74,8 +76,8 @@ def create(
         help="显示详细的选曲列表和评分",
     ),
     server_command: Optional[str] = typer.Option(
-        "cloud-music-mcp", "--server",
-        help="MCP Server 命令",
+        None, "--server",
+        help="MCP Server 命令（默认按优先级：环境变量 > 配置文件 > cloud-music-mcp）",
     ),
     expand: bool = typer.Option(
         True, "--expand/--no-expand",
@@ -85,11 +87,16 @@ def create(
         "flat", "--arrange", "-r",
         help="能量曲线编排模式: flat(均匀)/warm-up(渐进)/peak-mid(中段高潮)/rollercoaster(起伏)/climax-end(结尾高潮)",
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="预览模式，只显示候选和预测选曲，不创建歌单",
+    ),
 ):
     """基于锚点歌曲创建 DJ Set 歌单"""
 
     async def run():
-        async with CloudMusicMCPClient(server_command=server_command) as mcp:
+        mcp_cmd = get_mcp_server_command(server_command)
+        async with CloudMusicMCPClient(server_command=mcp_cmd) as mcp:
             # 检查登录
             if not await _check_login(mcp):
                 raise typer.Exit(1)
@@ -116,6 +123,7 @@ def create(
                         diversity_ratio=diversity,
                         enable_expand=expand,
                         arrange_mode=arrange_mode,
+                        dry_run=dry_run,
                     )
                 except ValueError as e:
                     console.print(f"[bold red]输入错误: {e}[/bold red]")
@@ -127,22 +135,37 @@ def create(
             # 展示结果
             anchor_count = result['stats'].get('anchor_count', len(result['anchors']))
             selected_count = result['stats'].get('selected_count', result['stats']['filtered_count'] - anchor_count)
-            console.print(f"\n[bold green]✅ 歌单构建完成![/bold green]")
-            console.print(
-                Panel(
-                    f"[bold]{result['playlist_name']}[/bold]\n"
-                    f"  ID: {result['playlist_id']}\n"
-                    f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
-                    f"  候选池: {result['stats']['total_candidates']} 首\n"
-                    f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
-                    f"  平均评分: {result['stats']['avg_score']}",
-                    title="📁 歌单信息",
-                    border_style="green",
+
+            if dry_run:
+                console.print(f"\n[bold yellow]🔍 预览模式 - 未创建歌单[/bold yellow]")
+                console.print(
+                    Panel(
+                        f"[bold]{result['playlist_name']}[/bold]\n"
+                        f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
+                        f"  候选池: {result['stats']['total_candidates']} 首\n"
+                        f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
+                        f"  平均评分: {result['stats']['avg_score']}",
+                        title="📁 预览信息",
+                        border_style="yellow",
+                    )
                 )
-            )
+            else:
+                console.print(f"\n[bold green]✅ 歌单构建完成![/bold green]")
+                console.print(
+                    Panel(
+                        f"[bold]{result['playlist_name']}[/bold]\n"
+                        f"  ID: {result['playlist_id']}\n"
+                        f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
+                        f"  候选池: {result['stats']['total_candidates']} 首\n"
+                        f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
+                        f"  平均评分: {result['stats']['avg_score']}",
+                        title="📁 歌单信息",
+                        border_style="green",
+                    )
+                )
 
             # 详细列表
-            if verbose:
+            if verbose or dry_run:
                 table = Table(
                     title=f"选曲列表 - {result['playlist_name']}",
                     box=box.ROUNDED,
@@ -174,6 +197,11 @@ def create(
                         reasons,
                     )
                 console.print(table)
+
+            # 状态摘要
+            if verbose:
+                status = curator.get_status()
+                console.print(f"\n[dim]最后状态: {status['stage']} - {status['message']} (进度: {status['progress']}%)[/dim]")
 
             return result
 

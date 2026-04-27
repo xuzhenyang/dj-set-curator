@@ -17,18 +17,22 @@ logger = logging.getLogger(__name__)
 
 
 def get_cache_dir() -> str:
-    """获取缓存根目录，遵循各平台规范"""
-    system = platform.system()
-    if system == "Darwin":  # macOS
-        base = Path.home() / "Library" / "Caches"
-    elif system == "Linux":
-        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    elif system == "Windows":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    """获取缓存根目录，支持环境变量覆盖"""
+    # 优先使用环境变量
+    if env_dir := os.environ.get("DJ_SET_CURATOR_CACHE_DIR"):
+        cache_dir = Path(env_dir)
     else:
-        base = Path(tempfile.gettempdir())
+        system = platform.system()
+        if system == "Darwin":  # macOS
+            base = Path.home() / "Library" / "Caches"
+        elif system == "Linux":
+            base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        elif system == "Windows":
+            base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        else:
+            base = Path(tempfile.gettempdir())
+        cache_dir = base / "dj-set-curator"
 
-    cache_dir = base / "dj-set-curator"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return str(cache_dir)
 
