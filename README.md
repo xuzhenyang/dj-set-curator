@@ -22,6 +22,7 @@
 - **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索
 - **锚点入单**：锚点歌曲自动加入最终歌单，作为 Set 的核心曲目
 - **一键建单**：自动创建网易云歌单并批量收藏入选曲目
+- **智能命名**：自动生成 `🎧 DJ Curator · {模式} · {艺人}` 格式歌单名，一眼识别来源和氛围
 
 ## 前置依赖
 
@@ -57,14 +58,31 @@ pip install -e .
 
 ## 使用示例
 
-### 单锚点 + 能量曲线
+### 自动生成歌单名（推荐）
+
+不传 `--name` 时，自动生成方案 E 格式：
 
 ```bash
-# 渐进式能量曲线（适合派对开场）
-dj-curator -a "keshi - WANTCHU" -n "Warm Up Set" --count 15 --arrange warm-up -v
+# 单锚点 → 🎧 DJ Curator · Warm Up · keshi
+dj-curator -a "keshi - WANTCHU" --count 15 --arrange warm-up -v
 
-# 结尾高潮（适合收尾）
-dj-curator -a "keshi - WANTCHU" -n "Climax Set" --count 15 --arrange climax-end -v
+# 多锚点 → 🎧 DJ Curator · Peak Mid · keshi × The Weeknd
+dj-curator \
+  -a "keshi - WANTCHU" \
+  -a "The Weeknd - Blinding Lights" \
+  --count 20 --arrange peak-mid
+```
+
+### 自定义歌单名
+
+传 `--name` 时会自动包装为方案 E 格式：
+
+```bash
+# → 🎧 DJ Curator · 周五晚 · Warm Up
+dj-curator -a "keshi - WANTCHU" -n "周五晚" --count 15 --arrange warm-up
+
+# → 🎧 DJ Curator · Late Night Drive · Flat
+dj-curator -a "keshi - WANTCHU" -n "Late Night Drive" --arrange flat
 ```
 
 ### 多锚点（打破同质化的最强手段）
@@ -73,7 +91,6 @@ dj-curator -a "keshi - WANTCHU" -n "Climax Set" --count 15 --arrange climax-end 
 dj-curator \
   -a "keshi - WANTCHU" \
   -a "The Weeknd - Blinding Lights" \
-  --name "Cross-genre Set" \
   --count 20
 ```
 
@@ -121,7 +138,7 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 | 参数 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--anchor` | `-a` | *必填* | 锚点歌曲，可多次指定 |
-| `--name` | `-n` | *必填* | 输出歌单名称 |
+| `--name` | `-n` | *可选* | 输出歌单名称（不传则自动生成） |
 | `--count` | `-c` | `20` | 目标歌曲数量 (1-100) |
 | `--bpm-tol` | | `5.0` | BPM 容差范围 |
 | `--diversity` | `-d` | `0.8` | 多样性比例 (0-1)，越高歌单风格越多样 |
