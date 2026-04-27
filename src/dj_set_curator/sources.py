@@ -1,5 +1,6 @@
 """多源候选采集器 - 从网易云多个渠道收集候选歌曲"""
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -242,32 +243,34 @@ class CrossArtistSource(CandidateSource):
 
         logger.info("跨艺术家源: '%s' 有 %d 个相似艺人", artist_name, len(similar_artists))
 
-        # 2. 对每个相似艺人获取热门歌曲（只取前 5 个相似艺人，避免过多）
-        for sa in similar_artists[:5]:
-            sa_id = sa.get("id")
-            sa_name = sa.get("name", "未知")
-            if not sa_id:
-                continue
+        # 2. 并发获取相似艺人的热门歌曲（取前 5 个相似艺人，每个 3 首）
+        target_artists = [sa for sa in similar_artists[:5] if sa.get("id")]
+        logger.info("跨艺术家源: 并发获取 %d 个相似艺人的热门歌曲...", len(target_artists))
 
-            logger.info("跨艺术家源: 获取相似艺人 '%s'(ID:%s) 的热门歌曲...", sa_name, sa_id)
+        async def fetch_artist_tracks(sa):
             try:
-                tracks = await self.mcp.get_artist_tracks(str(sa_id), limit=5)
-                for t in tracks:
-                    tid = str(t.get("id", ""))
-                    t_artist = t.get("artist", "").lower()
-                    t_name = t.get("name", "")
-                    # 过滤条件：
-                    # 1. 排除锚点 artist
-                    # 2. 去重
-                    # 3. 语言一致性
-                    # 4. 排除低质内容
-                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
-                        if self._language_match(anchor_name, t_name):
-                            if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
-                                seen_ids.add(tid)
-                                all_tracks.append(t)
-            except Exception as e:
-                logger.warning("跨艺术家源: 获取 '%s' 歌曲失败 - %s", sa_name, e)
+                return await self.mcp.get_artist_tracks(str(sa["id"]), limit=3)
+            except Exception:
+                return []
+
+        # 并发请求所有相似艺人的歌曲
+        results = await asyncio.gather(*[fetch_artist_tracks(sa) for sa in target_artists])
+
+        for tracks in results:
+            for t in tracks:
+                tid = str(t.get("id", ""))
+                t_artist = t.get("artist", "").lower()
+                t_name = t.get("name", "")
+                # 过滤条件：
+                # 1. 排除锚点 artist
+                # 2. 去重
+                # 3. 语言一致性
+                # 4. 排除低质内容
+                if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                    if self._language_match(anchor_name, t_name):
+                        if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
+                            seen_ids.add(tid)
+                            all_tracks.append(t)
 
         logger.info("跨艺术家源: 共获得 %d 首（不同 artist）", len(all_tracks))
         return all_tracks
@@ -302,7 +305,7 @@ class MultiSourceCollector:
 
     async def collect(self, anchors: list[dict]) -> list[dict]:
         """
-        从多个来源收集候选歌曲
+        从多个来源收集候选歌曲（所有来源并发执行）
 
         Args:
             anchors: 锚点歌曲列表 [{id, name, artist, artist_id, album_id}]
@@ -317,14 +320,21 @@ class MultiSourceCollector:
             anchor_name = anchor.get("name", "未知")
             logger.info("为多源采集锚点: %s", anchor_name)
 
-            for source in self.sources:
+            # 并发执行所有来源的采集
+            async def collect_from_source(source):
                 source_name = source.__class__.__name__
                 try:
                     tracks = await source.collect(anchor)
-                    all_candidates.extend(tracks)
-                    per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
+                    return source_name, tracks
                 except Exception as e:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
+                    return source_name, []
+
+            results = await asyncio.gather(*[collect_from_source(s) for s in self.sources])
+
+            for source_name, tracks in results:
+                all_candidates.extend(tracks)
+                per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
 
         # 去重
         unique = self._deduplicate(all_candidates)
