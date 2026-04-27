@@ -146,9 +146,14 @@ class DJSetCurator:
 
         # 4.5 解析曲风标签（所有候选 + 锚点）
         t0 = time.time()
-        genre_resolver = GenreResolver()
-        for candidate in unique_candidates:
-            candidate.genre_tags = genre_resolver.resolve(candidate)
+        genre_resolver = GenreResolver(self.mcp)
+        anchor_songs = [
+            Song(id=anchor.id, name=anchor.name, artist=anchor.artist)
+            for anchor in anchors
+            if not anchor.genre_tags
+        ]
+        await genre_resolver.prefill(unique_candidates + anchor_songs)
+        # 将解析结果同步回 anchor 对象
         for anchor in anchors:
             if not anchor.genre_tags:
                 anchor.genre_tags = genre_resolver.resolve(
