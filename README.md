@@ -11,7 +11,7 @@
   - BPM 兼容：支持 ±3% pitch、半速/倍速混音、±5/±10 BPM 分级
   - Key 过渡：DJ-proven Camelot 规则（+1 升能 / -1 降能 / ±2 张力 / relative 和谐）
   - 能量衔接：选曲时直接考虑目标能量曲线，避免事后硬重排
-- **多源采集**：7 个来源同时采集，候选池从 10+ 首扩展到 40+ 首
+- **多源采集**：7 个来源同时采集，候选池 40-80 首
   - **相似推荐**（网易云官方 API）
   - **艺术家热门**
   - **相似艺人**（网易云 `/simi/artist` API，核心来源）
@@ -132,7 +132,7 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 
 ## 引擎架构
 
-### 选曲流程（v0.2.0）
+### 选曲流程（v0.2.1）
 
 ```
 锚点歌曲
@@ -150,13 +150,15 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
   ↓
 粗粒度能量估计（BPM 代理 + 歌曲名 heuristics）
   ↓
+音频分析（全量并发，所有缺失 BPM/Key 的候选）
+  ↓
 预过滤（SongFilter 过滤掉低分候选）
   ↓
 贪心序列构建（SequentialSelector）
   ← 每一步选择"与当前末尾过渡分最高"的下一首
   ← 同时匹配目标能量曲线
   ↓
-精能量分析（仅对入选歌曲做 librosa）
+精能量分析（对入选歌曲做 librosa RMS）
   ↓
 创建网易云歌单
 ```
@@ -221,8 +223,11 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 - **粗粒度**（所有候选）：`energy = BPM × 0.5` + 歌曲名关键词 heuristics
   - 高能量词：remix / club / bass / drop → +8
   - 低能量词：acoustic / piano / sleep / chill → -12
-- **精分析**（仅入选歌曲）：librosa RMS 能量分析
-- **VIP 歌曲**：粗粒度能量 100% 可用，不再失败
+- **全量精分析**（所有缺失 BPM/Key 的候选）：librosa `beat_track` + `chroma_cqt`，并发 batch=10
+  - 不再限制前 25 首，候选池内全部分析
+  - 分析结果缓存到 `analysis_cache.json`，永久复用
+- **入选后精能量**（最终入选歌曲）：librosa RMS 能量分析，替换 heuristics 能量
+- **VIP 歌曲**：粗粒度能量 100% 可用，不阻塞流程
 
 ### 音频分析缓存
 
