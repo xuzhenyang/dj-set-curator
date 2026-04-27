@@ -281,7 +281,10 @@ class DJSetCurator:
         async def _analyze_one(item):
             candidate, cid, has_bpm, has_key = item
             try:
-                analysis = await analyzer.analyze_song(cid)
+                analysis = await asyncio.wait_for(
+                    analyzer.analyze_song(cid),
+                    timeout=20.0  # 单首分析最多 20 秒，避免卡住
+                )
                 if analysis:
                     if not has_bpm:
                         candidate["bpm"] = analysis.get("bpm")
@@ -290,6 +293,8 @@ class DJSetCurator:
                     if analysis.get("bpm"):
                         candidate["energy"] = analysis["bpm"] * 0.5
                     return True
+            except asyncio.TimeoutError:
+                logger.warning("音频分析超时: %s", cid)
             except Exception:
                 pass
             return False
