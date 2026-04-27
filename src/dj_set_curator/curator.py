@@ -233,24 +233,23 @@ class DJSetCurator:
                 unique_candidates, anchors, target_count
             )
 
-        # 6. 粗粒度能量估计（所有候选）+ 音频分析（仅前 N 首，并发）
+        # 6. 粗粒度能量估计（所有候选）+ 音频分析（全量并发）
         t_analysis_start = time.time()
 
         # 先给所有候选加上能量估计
         for candidate in unique_candidates:
             candidate["energy"] = self._energy_heuristic(candidate)
 
-        # 只对前 max_analyze 首缺失 BPM/Key 的候选做音频分析
-        max_analyze = 25  # 限制分析数量，避免超时
+        # 对所有缺失 BPM/Key 的候选做音频分析（不限制数量）
         to_analyze = []
-        for candidate in unique_candidates[:max_analyze]:
+        for candidate in unique_candidates:
             cid = str(candidate.get("id", ""))
             has_bpm = candidate.get("bpm") is not None
             has_key = candidate.get("key") is not None
             if not has_bpm or not has_key:
                 to_analyze.append((candidate, cid, has_bpm, has_key))
 
-        logger.info("音频分析: %d 首候选中 %d 首需要分析（限制前 %d 首）", len(unique_candidates), len(to_analyze), max_analyze)
+        logger.info("音频分析: %d 首候选中 %d 首需要分析（全量）", len(unique_candidates), len(to_analyze))
 
         async def _analyze_one(item):
             candidate, cid, has_bpm, has_key = item
@@ -268,9 +267,9 @@ class DJSetCurator:
                 pass
             return False
 
-        # 并发分析（最多 5 个并发，避免过度占用资源）
+        # 并发分析（最多 10 个并发）
         analyzed_count = 0
-        batch_size = 5
+        batch_size = 10
         for i in range(0, len(to_analyze), batch_size):
             batch = to_analyze[i:i+batch_size]
             results = await asyncio.gather(*[_analyze_one(item) for item in batch])
