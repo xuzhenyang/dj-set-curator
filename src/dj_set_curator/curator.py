@@ -234,7 +234,6 @@ class DJSetCurator:
             )
 
         # 6. 粗粒度能量估计（所有候选）+ 音频分析（仅前 N 首，并发）
-        import time
         t_analysis_start = time.time()
 
         # 先给所有候选加上能量估计
