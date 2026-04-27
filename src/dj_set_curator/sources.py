@@ -236,7 +236,12 @@ class CrossArtistSource(CandidateSource):
         # 1. 获取相似艺人
         logger.info("跨艺术家源: 获取 '%s'(ID:%s) 的相似艺人...", artist_name, artist_id)
         try:
-            similar_artists = await self.mcp.get_similar_artists(str(artist_id))
+            similar_artists = await asyncio.wait_for(
+                self.mcp.get_similar_artists(str(artist_id)), timeout=15.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("跨艺术家源: 获取相似艺人超时")
+            return []
         except Exception as e:
             logger.warning("跨艺术家源: 获取相似艺人失败 - %s", e)
             return []
@@ -249,7 +254,12 @@ class CrossArtistSource(CandidateSource):
 
         async def fetch_artist_tracks(sa):
             try:
-                return await self.mcp.get_artist_tracks(str(sa["id"]), limit=3)
+                return await asyncio.wait_for(
+                    self.mcp.get_artist_tracks(str(sa["id"]), limit=3), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.debug("跨艺术家源: 获取艺人 %s 歌曲超时", sa.get("name"))
+                return []
             except Exception:
                 return []
 
@@ -320,12 +330,15 @@ class MultiSourceCollector:
             anchor_name = anchor.get("name", "未知")
             logger.info("为多源采集锚点: %s", anchor_name)
 
-            # 并发执行所有来源的采集
+            # 并发执行所有来源的采集（每个 source 最多 30 秒）
             async def collect_from_source(source):
                 source_name = source.__class__.__name__
                 try:
-                    tracks = await source.collect(anchor)
+                    tracks = await asyncio.wait_for(source.collect(anchor), timeout=30.0)
                     return source_name, tracks
+                except asyncio.TimeoutError:
+                    logger.warning("来源 %s 采集超时", source_name)
+                    return source_name, []
                 except Exception as e:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
                     return source_name, []
