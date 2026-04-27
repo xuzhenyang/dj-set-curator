@@ -191,8 +191,8 @@ def create(
                     reasons = ", ".join(s.match_reasons) if s.match_reasons else "相似推荐"
                     table.add_row(
                         str(i),
-                        s.song.get("name", "未知"),
-                        s.song.get("artist", "未知"),
+                        s.song.name,
+                        s.song.artist,
                         f"{s.score:.0f}",
                         reasons,
                     )

@@ -89,7 +89,7 @@ class EnergyArcArranger:
         """批量分析歌曲能量，返回 {song_id: energy_score}"""
         energies = {}
         for s in songs:
-            sid = str(s.song.get("id", ""))
+            sid = str(s.song.id)
             if not sid:
                 continue
             energy = await self.energy_analyzer.analyze_energy(sid)
@@ -133,7 +133,7 @@ class EnergyArcArranger:
             best_score = -9999
 
             for candidate in remaining:
-                sid = str(candidate.song.get("id", ""))
+                sid = str(candidate.song.id)
                 song_energy = energies.get(sid, 50.0)
 
                 # 能量匹配分（越接近目标越好）
@@ -143,9 +143,9 @@ class EnergyArcArranger:
                 # BPM 过渡分（与上一首的 BPM 差越小越好）
                 bpm_score = 100
                 if arranged and candidate.bpm_diff is not None:
-                    prev_bpm = arranged[-1].song.get("bpm")
+                    prev_bpm = arranged[-1].song.bpm
                     if prev_bpm is not None:
-                        curr_bpm = candidate.song.get("bpm")
+                        curr_bpm = candidate.song.bpm
                         if curr_bpm is not None:
                             bpm_diff = abs(curr_bpm - prev_bpm)
                             if bpm_diff <= bpm_tolerance:

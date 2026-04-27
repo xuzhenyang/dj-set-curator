@@ -1,10 +1,10 @@
 """过渡评分引擎 - DJ-proven 的 pair-wise transition scoring"""
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 from dj_set_curator.filters import SongFilter
-from dj_set_curator.models import AnchorSong, ScoredSong
+from dj_set_curator.models import AnchorSong, ScoredSong, Song
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,7 @@ class TransitionScorer:
         self.bpm_tolerance = bpm_tolerance
         self.filter = SongFilter(bpm_tolerance=bpm_tolerance)
 
-    # ───────────────────────────────────────────────
     # BPM 过渡评分
-    # ───────────────────────────────────────────────
     def bpm_transition_score(
         self, curr_bpm: Optional[float], next_bpm: Optional[float]
     ) -> float:
@@ -62,9 +60,7 @@ class TransitionScorer:
 
         return 0.0
 
-    # ───────────────────────────────────────────────
     # Key 过渡评分（DJ-proven Camelot 规则）
-    # ───────────────────────────────────────────────
     def key_transition_score(
         self, curr_key: Optional[str], next_key: Optional[str]
     ) -> float:
@@ -121,9 +117,7 @@ class TransitionScorer:
 
         return 10.0
 
-    # ───────────────────────────────────────────────
     # 能量过渡评分
-    # ───────────────────────────────────────────────
     def energy_transition_score(
         self,
         curr_energy: Optional[float],
@@ -155,9 +149,7 @@ class TransitionScorer:
 
         return max(0, target_score - mutation_penalty)
 
-    # ───────────────────────────────────────────────
     # Artist 过渡惩罚（防止同艺术家连续出现）
-    # ───────────────────────────────────────────────
     def artist_transition_penalty(
         self, curr_artist: str, next_artist: str, consecutive_same: int = 0
     ) -> float:
@@ -173,13 +165,11 @@ class TransitionScorer:
         penalties = {0: 0, 1: 8, 2: 25, 3: 55, 4: 80}
         return penalties.get(consecutive_same, 85)
 
-    # ───────────────────────────────────────────────
     # 综合过渡评分
-    # ───────────────────────────────────────────────
     def score_transition(
         self,
-        curr_song: dict,
-        next_song: dict,
+        curr_song: Union[Song, AnchorSong],
+        next_song: Union[Song, AnchorSong],
         target_energy: Optional[float] = None,
         consecutive_same_artist: int = 0,
     ) -> dict:
@@ -196,18 +186,21 @@ class TransitionScorer:
             }
         """
         bpm_s = self.bpm_transition_score(
-            curr_song.get("bpm"), next_song.get("bpm")
+            curr_song.bpm, next_song.bpm
         )
         key_s = self.key_transition_score(
-            curr_song.get("key"), next_song.get("key")
+            curr_song.key, next_song.key
         )
+
+        curr_energy = getattr(curr_song, "energy", None)
+        next_energy = getattr(next_song, "energy", None)
         energy_s = self.energy_transition_score(
-            curr_song.get("energy"), next_song.get("energy"), target_energy
+            curr_energy, next_energy, target_energy
         )
 
         artist_penalty = self.artist_transition_penalty(
-            curr_song.get("artist", ""),
-            next_song.get("artist", ""),
+            curr_song.artist,
+            next_song.artist,
             consecutive_same_artist,
         )
 
@@ -247,7 +240,7 @@ class SequentialSelector:
 
     def select(
         self,
-        candidates: list[dict],
+        candidates: list[Song],
         anchors: list[AnchorSong],
         target_count: int,
     ) -> list[ScoredSong]:
@@ -268,17 +261,10 @@ class SequentialSelector:
         target_energies = self._get_target_energies(target_count)
         arranged = []
 
-        # 将锚点转换为 dict 格式作为序列起点
-        current_songs = []
+        # 将锚点转换为 Song 格式作为序列起点
+        current_songs: list[Union[Song, AnchorSong]] = []
         for a in anchors:
-            current_songs.append({
-                "id": a.id,
-                "name": a.name,
-                "artist": a.artist,
-                "bpm": a.bpm,
-                "key": a.key,
-                "energy": getattr(a, "energy", None) or (a.bpm * 0.5 if a.bpm else 50.0),
-            })
+            current_songs.append(a)
 
         remaining = list(candidates)
         used_ids = {a.id for a in anchors}
@@ -300,16 +286,16 @@ class SequentialSelector:
             best_details = None
 
             for cand in remaining:
-                cid = str(cand.get("id", ""))
+                cid = str(cand.id)
                 if cid in used_ids:
                     continue
 
                 # 确保候选有 energy 字段
-                if "energy" not in cand or cand["energy"] is None:
-                    cand["energy"] = cand.get("bpm", 100) * 0.5 if cand.get("bpm") else 50.0
+                if getattr(cand, "energy", None) is None:
+                    cand.energy = cand.bpm * 0.5 if cand.bpm else 50.0
 
                 if current:
-                    cand_artist = cand.get("artist", "").lower()
+                    cand_artist = cand.artist.lower()
                     consec = artist_consecutive.get(cand_artist, 0)
 
                     details = self.scorer.score_transition(
@@ -318,7 +304,7 @@ class SequentialSelector:
                     score = details["total"]
                 else:
                     # 第一步没有 current，用目标能量接近度
-                    energy = cand.get("energy", 50.0)
+                    energy = getattr(cand, "energy", 50.0) or 50.0
                     score = max(0, 100 - abs(energy - target_energy) * 2)
                     details = {"total": score, "bpm": 50, "key": 50, "energy": score, "artist_penalty": 0}
 
@@ -328,21 +314,23 @@ class SequentialSelector:
                     best_details = details
 
             if best_candidate:
+                current_bpm = getattr(current, "bpm", None) if current else None
+                best_bpm = getattr(best_candidate, "bpm", None)
                 arranged.append(
                     ScoredSong(
                         song=best_candidate,
                         score=round(best_score, 1),
-                        bpm_diff=best_candidate.get("bpm", 0) - (current.get("bpm", 0) if current else 0),
+                        bpm_diff=(best_bpm - current_bpm) if best_bpm is not None and current_bpm is not None else None,
                         key_distance=None,
                         match_reasons=self._build_reasons(best_details),
                     )
                 )
-                used_ids.add(str(best_candidate.get("id", "")))
+                used_ids.add(str(best_candidate.id))
                 remaining.remove(best_candidate)
                 current_songs.append(best_candidate)
 
                 # 更新 artist 连续计数
-                artist = best_candidate.get("artist", "").lower()
+                artist = best_candidate.artist.lower()
                 artist_consecutive[artist] = artist_consecutive.get(artist, 0) + 1
                 # 重置其他 artist 的计数
                 for k in list(artist_consecutive.keys()):

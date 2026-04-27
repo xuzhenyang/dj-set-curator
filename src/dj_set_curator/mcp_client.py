@@ -8,6 +8,8 @@ from typing import Any, Optional
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from dj_set_curator.models import Song
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,18 +114,18 @@ class CloudMusicMCPClient:
             return {"logged_in": logged_in, "message": result}
         return {"logged_in": False, "message": str(result)}
 
-    async def search_song(self, keyword: str) -> list[dict]:
-        """搜索歌曲，返回 song 列表 [{id, name, artist}]"""
+    async def search_song(self, keyword: str) -> list[Song]:
+        """搜索歌曲，返回 Song 列表"""
         result = await self._call_tool("cloud_music_search", {"keyword": keyword})
         if isinstance(result, list):
-            return result
+            return [Song.from_dict(d) for d in result]
         if isinstance(result, str):
             # 可能是错误信息
             raise RuntimeError(f"搜索失败: {result}")
         return []
 
-    async def get_similar_songs(self, song_id: str, limit: int = 20) -> list[dict]:
-        """获取相似歌曲列表 [{id, name, artist}]"""
+    async def get_similar_songs(self, song_id: str, limit: int = 20) -> list[Song]:
+        """获取相似歌曲列表"""
         result = await self._call_tool(
             "cloud_music_get_similar_songs",
             {"song_id": str(song_id), "limit": limit},
@@ -132,13 +134,13 @@ class CloudMusicMCPClient:
         if isinstance(result, str):
             return self._parse_similar_songs_text(result)
         if isinstance(result, list):
-            return result
+            return [Song.from_dict(d) for d in result]
         if isinstance(result, dict) and "songs" in result:
-            return result["songs"]
+            return [Song.from_dict(d) for d in result["songs"]]
         return []
 
     @staticmethod
-    def _parse_similar_songs_text(text: str) -> list[dict]:
+    def _parse_similar_songs_text(text: str) -> list[Song]:
         """解析相似推荐返回的格式化文本"""
         songs = []
         for line in text.split("\n"):
@@ -158,7 +160,7 @@ class CloudMusicMCPClient:
                 else:
                     name = name_artist
                     artist = "未知"
-                songs.append({"id": song_id, "name": name.strip(), "artist": artist.strip()})
+                songs.append(Song.from_dict({"id": song_id, "name": name.strip(), "artist": artist.strip()}))
         return songs
 
     async def create_playlist(self, name: str, privacy: bool = False) -> str:
@@ -194,38 +196,26 @@ class CloudMusicMCPClient:
             raise RuntimeError(f"获取歌曲详情失败: {result}")
         return {}
 
-    async def get_audio_url(self, song_id: str) -> dict:
-        """获取歌曲音频下载链接，返回 {id, url, br, type, duration}"""
-        result = await self._call_tool(
-            "cloud_music_get_audio_url",
-            {"song_id": str(song_id)},
-        )
-        if isinstance(result, dict) and "url" in result:
-            return result
-        if isinstance(result, str) and ("失败" in result or "错误" in result):
-            raise RuntimeError(f"获取音频链接失败: {result}")
-        return {}
-
-    async def get_artist_tracks(self, artist_id: str, limit: int = 30) -> list[dict]:
-        """获取艺术家热门歌曲列表 [{id, name, artist, album}]"""
+    async def get_artist_tracks(self, artist_id: str, limit: int = 30) -> list[Song]:
+        """获取艺术家热门歌曲列表"""
         result = await self._call_tool(
             "cloud_music_get_artist_tracks",
             {"artist_id": str(artist_id), "limit": limit},
         )
         if isinstance(result, list):
-            return result
+            return [Song.from_dict(d) for d in result]
         if isinstance(result, str) and ("失败" in result or "错误" in result):
             raise RuntimeError(f"获取艺术家歌曲失败: {result}")
         return []
 
-    async def get_album_songs(self, album_id: str) -> list[dict]:
-        """获取专辑歌曲列表 [{id, name, artist, album}]"""
+    async def get_album_songs(self, album_id: str) -> list[Song]:
+        """获取专辑歌曲列表"""
         result = await self._call_tool(
             "cloud_music_get_album_songs",
             {"album_id": str(album_id)},
         )
         if isinstance(result, list):
-            return result
+            return [Song.from_dict(d) for d in result]
         if isinstance(result, str) and ("失败" in result or "错误" in result):
             raise RuntimeError(f"获取专辑歌曲失败: {result}")
         return []
@@ -240,6 +230,14 @@ class CloudMusicMCPClient:
             return result
         if isinstance(result, str) and ("失败" in result or "错误" in result):
             raise RuntimeError(f"获取相似艺人失败: {result}")
+        return []
+
+    async def get_daily_recommendations(self) -> list[Song]:
+        """获取每日推荐歌曲列表"""
+        # 每日推荐目前没有直接 MCP 工具，通过搜索热门歌曲模拟
+        result = await self._call_tool("cloud_music_search", {"keyword": "每日推荐"})
+        if isinstance(result, list):
+            return [Song.from_dict(d) for d in result]
         return []
 
     async def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]):

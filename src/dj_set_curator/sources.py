@@ -6,6 +6,7 @@ import re
 from typing import Optional
 
 from dj_set_curator.mcp_client import CloudMusicMCPClient
+from dj_set_curator.models import Song
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ class CandidateSource:
     def __init__(self, mcp_client: CloudMusicMCPClient):
         self.mcp = mcp_client
 
-    async def collect(self, anchor: dict) -> list[dict]:
-        """返回候选歌曲列表 [{id, name, artist}]"""
+    async def collect(self, anchor: dict) -> list[Song]:
+        """返回候选歌曲列表 [Song]"""
         raise NotImplementedError
 
     @staticmethod
@@ -43,7 +44,7 @@ class CandidateSource:
 class SimilarSource(CandidateSource):
     """网易云相似推荐源"""
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         song_id = str(anchor.get("id", ""))
         if not song_id:
             return []
@@ -56,7 +57,7 @@ class SimilarSource(CandidateSource):
 class ArtistTopSource(CandidateSource):
     """艺术家热门歌曲源"""
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         artist_id = anchor.get("artist_id")
         artist_name = anchor.get("artist", "")
         if not artist_id:
@@ -77,7 +78,7 @@ class ArtistTopSource(CandidateSource):
 class AlbumSource(CandidateSource):
     """同专辑歌曲源"""
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         album_id = anchor.get("album_id")
         song_name = anchor.get("name", "")
         if not album_id:
@@ -91,7 +92,7 @@ class AlbumSource(CandidateSource):
         tracks = await self.mcp.get_album_songs(str(album_id))
         # 移除锚点歌曲本身
         anchor_id = str(anchor.get("id", ""))
-        tracks = [t for t in tracks if str(t.get("id", "")) != anchor_id]
+        tracks = [t for t in tracks if str(t.id) != anchor_id]
         logger.info("专辑源: 获得 %d 首（不含锚点）", len(tracks))
         return tracks
 
@@ -99,7 +100,7 @@ class AlbumSource(CandidateSource):
 class DailyRecSource(CandidateSource):
     """每日推荐源"""
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         logger.info("每日推荐源: 获取今日推荐...")
         # 每日推荐目前没有直接 MCP 工具，通过搜索风格标签模拟
         # 使用锚点艺术家的风格搜索
@@ -114,7 +115,7 @@ class DailyRecSource(CandidateSource):
             tracks = await self.mcp.search_song(query)
             # 只取前 15 首，且排除锚点本身
             anchor_id = str(anchor.get("id", ""))
-            tracks = [t for t in tracks[:8] if str(t.get("id", "")) != anchor_id]
+            tracks = [t for t in tracks[:8] if str(t.id) != anchor_id]
             logger.info("每日推荐源: 获得 %d 首", len(tracks))
             return tracks
         except Exception as e:
@@ -125,7 +126,7 @@ class DailyRecSource(CandidateSource):
 class TagSearchSource(CandidateSource):
     """标签搜索源 - 用风格标签搜索"""
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         artist = anchor.get("artist", "")
         name = anchor.get("name", "")
         if not artist:
@@ -141,7 +142,7 @@ class TagSearchSource(CandidateSource):
             try:
                 tracks = await self.mcp.search_song(query)
                 for t in tracks[:5]:
-                    tid = str(t.get("id", ""))
+                    tid = str(t.id)
                     if tid and tid not in seen_ids:
                         seen_ids.add(tid)
                         all_tracks.append(t)
@@ -149,7 +150,7 @@ class TagSearchSource(CandidateSource):
                 logger.warning("标签搜索源: '%s' 搜索失败 - %s", query, e)
         # 排除锚点
         anchor_id = str(anchor.get("id", ""))
-        all_tracks = [t for t in all_tracks if str(t.get("id", "")) != anchor_id]
+        all_tracks = [t for t in all_tracks if str(t.id) != anchor_id]
         logger.info("标签搜索源: 共获得 %d 首", len(all_tracks))
         return all_tracks
 
@@ -166,7 +167,7 @@ class GenreSearchSource(CandidateSource):
         (150, 999, [" drum and bass", "hardstyle", "速核"]),
     ]
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         bpm = anchor.get("bpm")
         artist = anchor.get("artist", "")
         anchor_name = anchor.get("name", "")
@@ -195,9 +196,9 @@ class GenreSearchSource(CandidateSource):
             try:
                 tracks = await self.mcp.search_song(query)
                 for t in tracks[:5]:
-                    tid = str(t.get("id", ""))
-                    t_artist = t.get("artist", "").lower()
-                    t_name = t.get("name", "")
+                    tid = str(t.id)
+                    t_artist = t.artist.lower()
+                    t_name = t.name
                     # 过滤条件：
                     # 1. 排除锚点 artist
                     # 2. 语言一致性（避免跨语言噪音）
@@ -217,7 +218,7 @@ class GenreSearchSource(CandidateSource):
 class CrossArtistSource(CandidateSource):
     """跨艺术家搜索源 - 使用网易云相似艺人 API 寻找风格相近的其他 artist"""
 
-    async def collect(self, anchor: dict) -> list[dict]:
+    async def collect(self, anchor: dict) -> list[Song]:
         artist_id = anchor.get("artist_id")
         artist_name = anchor.get("artist", "")
         anchor_name = anchor.get("name", "")
@@ -268,9 +269,9 @@ class CrossArtistSource(CandidateSource):
 
         for tracks in results:
             for t in tracks:
-                tid = str(t.get("id", ""))
-                t_artist = t.get("artist", "").lower()
-                t_name = t.get("name", "")
+                tid = str(t.id)
+                t_artist = t.artist.lower()
+                t_name = t.name
                 # 过滤条件：
                 # 1. 排除锚点 artist
                 # 2. 去重
@@ -302,18 +303,18 @@ class MultiSourceCollector:
         ]
 
     @staticmethod
-    def _deduplicate(songs: list[dict]) -> list[dict]:
+    def _deduplicate(songs: list[Song]) -> list[Song]:
         """按 song id 去重"""
         seen = set()
         result = []
         for song in songs:
-            sid = str(song.get("id", ""))
+            sid = str(song.id)
             if sid and sid not in seen:
                 seen.add(sid)
                 result.append(song)
         return result
 
-    async def collect(self, anchors: list[dict]) -> list[dict]:
+    async def collect(self, anchors: list[dict]) -> list[Song]:
         """
         从多个来源收集候选歌曲（所有来源并发执行）
 

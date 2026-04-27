@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Optional
 
-from dj_set_curator.models import AnchorSong
+from dj_set_curator.models import AnchorSong, ScoredSong, Song
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +44,6 @@ for key, camelot in CAMELOT_WHEEL.items():
     CAMELOT_TO_KEYS.setdefault(camelot, []).append(key)
 
 
-from dj_set_curator.models import ScoredSong
-
-
 class SongFilter:
     """歌曲筛选器 - 基于 BPM、调性、艺术家关联度评分"""
 
@@ -69,25 +66,13 @@ class SongFilter:
         self.artist_weight = artist_weight
         self.diversity_weight = diversity_weight
 
-    def _extract_bpm(self, song: dict) -> Optional[float]:
+    def _extract_bpm(self, song: Song) -> Optional[float]:
         """从歌曲信息中提取 BPM（如有）"""
-        # 网易云 API 通常不直接返回 BPM，但预留扩展
-        for key in ["bpm", "BPM", "tempo"]:
-            if key in song and song[key] is not None:
-                try:
-                    return float(song[key])
-                except (ValueError, TypeError):
-                    continue
-        return None
+        return song.bpm
 
-    def _extract_key(self, song: dict) -> Optional[str]:
+    def _extract_key(self, song: Song) -> Optional[str]:
         """从歌曲信息中提取调性（如有）"""
-        for key in ["key", "tonality", "camelot", "Key"]:
-            if key in song and song[key] is not None:
-                val = str(song[key]).strip()
-                if val:
-                    return val
-        return None
+        return song.key
 
     def _bpm_score(self, candidate_bpm: Optional[float], anchor_bpms: list[float]) -> float:
         """BPM 匹配度评分 (0-100)"""
@@ -195,9 +180,9 @@ class SongFilter:
 
         return best_score
 
-    def _artist_score(self, candidate: dict, anchors: list[AnchorSong]) -> float:
+    def _artist_score(self, candidate: Song, anchors: list[AnchorSong]) -> float:
         """艺术家关联度评分 (0-100)"""
-        candidate_artists = candidate.get("artist", "").lower()
+        candidate_artists = candidate.artist.lower()
         for anchor in anchors:
             if anchor.artist.lower() in candidate_artists:
                 return 100.0
@@ -206,26 +191,26 @@ class SongFilter:
         # 无直接关联给基础分
         return 30.0
 
-    def _diversity_score(self, candidate: dict, selected_so_far: list[ScoredSong]) -> float:
+    def _diversity_score(self, candidate: Song, selected_so_far: list[ScoredSong]) -> float:
         """多样性评分 - 避免与已选歌曲过于重复 (0-100)"""
         if not selected_so_far:
             return 100.0
 
-        candidate_name = candidate.get("name", "").lower()
-        candidate_artist = candidate.get("artist", "").lower()
+        candidate_name = candidate.name.lower()
+        candidate_artist = candidate.artist.lower()
 
         # 检查是否已有同名或同艺术家
         for s in selected_so_far:
-            if s.song.get("name", "").lower() == candidate_name:
+            if s.song.name.lower() == candidate_name:
                 return 10.0
-            if s.song.get("artist", "").lower() == candidate_artist:
+            if s.song.artist.lower() == candidate_artist:
                 return 50.0
 
         return 100.0
 
     def score_candidates(
         self,
-        candidates: list[dict],
+        candidates: list[Song],
         anchors: list[AnchorSong],
     ) -> list[ScoredSong]:
         """

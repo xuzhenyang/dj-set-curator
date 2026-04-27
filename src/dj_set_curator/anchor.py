@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from dj_set_curator.mcp_client import CloudMusicMCPClient
-from dj_set_curator.models import AnchorSong
+from dj_set_curator.models import AnchorSong, Song
 
 
 class AnchorAnalyzer:
@@ -57,11 +57,11 @@ class AnchorAnalyzer:
             # 降级：通过搜索确认
             songs = await mcp_client.search_song(query)
             for song in songs:
-                if str(song.get("id", "")) == query:
+                if str(song.id) == query:
                     return AnchorSong(
-                        id=str(song["id"]),
-                        name=song.get("name", "未知"),
-                        artist=song.get("artist", "未知"),
+                        id=str(song.id),
+                        name=song.name,
+                        artist=song.artist,
                     )
             # 全部失败，直接信任用户输入的 ID
             return AnchorSong(
@@ -82,14 +82,14 @@ class AnchorAnalyzer:
         if artist_hint:
             # 尝试找到艺术家匹配度更高的结果
             for song in songs:
-                if artist_hint.lower() in song.get("artist", "").lower():
+                if artist_hint.lower() in song.artist.lower():
                     best_match = song
                     break
 
         return AnchorSong(
-            id=str(best_match["id"]),
-            name=best_match.get("name", "未知"),
-            artist=best_match.get("artist", "未知"),
+            id=str(best_match.id),
+            name=best_match.name,
+            artist=best_match.artist,
         )
 
     async def resolve_multiple(
