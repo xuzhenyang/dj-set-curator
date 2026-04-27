@@ -141,10 +141,33 @@ class DJSetCurator:
         logger.info("级联扩展后候选歌曲: %d 首", len(unique))
         return unique
 
+    def _format_playlist_name(self, playlist_name: Optional[str], anchors: list, arrange_mode: str) -> str:
+        """生成方案 E 格式的歌单名称"""
+        mode_display = {
+            "flat": "Flat",
+            "warm-up": "Warm Up",
+            "peak-mid": "Peak Mid",
+            "rollercoaster": "Rollercoaster",
+            "climax-end": "Climax End",
+        }.get(arrange_mode, arrange_mode.title())
+
+        if playlist_name:
+            return f"🎧 DJ Curator · {playlist_name} · {mode_display}"
+
+        artists = [a.artist for a in anchors if getattr(a, "artist", None)]
+        if len(artists) >= 2:
+            artist_str = f"{artists[0]} × {artists[1]}"
+        elif len(artists) == 1:
+            artist_str = artists[0]
+        else:
+            artist_str = "Mix"
+
+        return f"🎧 DJ Curator · {mode_display} · {artist_str}"
+
     async def build_playlist(
         self,
         anchor_queries: list[str],
-        playlist_name: str,
+        playlist_name: Optional[str] = None,
         target_count: int = 20,
         diversity_ratio: float = 0.8,
         enable_expand: bool = True,
@@ -164,6 +187,10 @@ class DJSetCurator:
         logger.info("正在解析 %d 个锚点歌曲...", len(anchor_queries))
         anchors = await self.anchor_analyzer.resolve_multiple(anchor_queries, self.mcp)
         logger.info("[计时] 解析锚点: %.2fs", time.time() - t0)
+
+        # 生成最终歌单名称（方案 E）
+        final_name = self._format_playlist_name(playlist_name, anchors, arrange_mode)
+        logger.info("歌单名称: %s", final_name)
 
         # 2. 分析锚点 BPM/Key + 精能量分析
         t0 = time.time()
@@ -322,8 +349,8 @@ class DJSetCurator:
 
         # 11. 创建歌单并添加
         t0 = time.time()
-        logger.info("正在创建歌单 '%s'...", playlist_name)
-        playlist_id = await self.mcp.create_playlist(playlist_name)
+        logger.info("正在创建歌单 '%s'...", final_name)
+        playlist_id = await self.mcp.create_playlist(final_name)
         logger.info("歌单创建成功，ID: %s", playlist_id)
 
         await self.mcp.add_tracks_to_playlist(playlist_id, track_ids)
@@ -336,7 +363,7 @@ class DJSetCurator:
 
         return {
             "playlist_id": playlist_id,
-            "playlist_name": playlist_name,
+            "playlist_name": final_name,
             "anchors": anchors,
             "selected_songs": selected,
             "stats": {

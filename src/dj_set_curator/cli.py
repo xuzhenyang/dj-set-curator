@@ -51,9 +51,9 @@ def create(
         ..., "--anchor", "-a",
         help="锚点歌曲（可多次指定，支持 'Artist - Song' 格式或网易云 ID）",
     ),
-    name: str = typer.Option(
-        ..., "--name", "-n",
-        help="输出歌单名称",
+    name: Optional[str] = typer.Option(
+        None, "--name", "-n",
+        help="输出歌单名称（可选，不传则自动生成）",
     ),
     count: int = typer.Option(
         20, "--count", "-c",
