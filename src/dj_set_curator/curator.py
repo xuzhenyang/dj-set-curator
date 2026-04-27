@@ -147,7 +147,7 @@ class DJSetCurator:
         return unique
 
     def _format_playlist_name(self, playlist_name: Optional[str], anchors: list, arrange_mode: str) -> str:
-        """生成方案 E 格式的歌单名称"""
+        """生成方案 E 格式的歌单名称（网易云 API 不支持 Emoji）"""
         mode_display = {
             "flat": "Flat",
             "warm-up": "Warm Up",
@@ -157,17 +157,17 @@ class DJSetCurator:
         }.get(arrange_mode, arrange_mode.title())
 
         if playlist_name:
-            return f"🎧 DJ Curator · {playlist_name} · {mode_display}"
+            return f"[DJ Curator] {playlist_name} | {mode_display}"
 
         artists = [a.artist for a in anchors if getattr(a, "artist", None)]
         if len(artists) >= 2:
-            artist_str = f"{artists[0]} × {artists[1]}"
+            artist_str = f"{artists[0]} x {artists[1]}"
         elif len(artists) == 1:
             artist_str = artists[0]
         else:
             artist_str = "Mix"
 
-        return f"🎧 DJ Curator · {mode_display} · {artist_str}"
+        return f"[DJ Curator] {mode_display} | {artist_str}"
 
     async def build_playlist(
         self,
