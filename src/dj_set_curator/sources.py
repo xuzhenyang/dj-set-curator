@@ -330,31 +330,19 @@ class MultiSourceCollector:
             anchor_name = anchor.get("name", "未知")
             logger.info("为多源采集锚点: %s", anchor_name)
 
-            # 并发执行所有来源的采集（每个 source 最多 30 秒）
-            async def collect_from_source(source):
+            # 逐个 source 采集（串行，避免 gather 并发卡死）
+            for source in self.sources:
                 source_name = source.__class__.__name__
                 try:
+                    logger.info("来源 %s: 开始采集...", source_name)
                     tracks = await asyncio.wait_for(source.collect(anchor), timeout=30.0)
-                    return source_name, tracks
+                    all_candidates.extend(tracks)
+                    per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
+                    logger.info("来源 %s: 采集完成 (%d 首)", source_name, len(tracks))
                 except asyncio.TimeoutError:
                     logger.warning("来源 %s 采集超时", source_name)
-                    return source_name, []
                 except Exception as e:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
-                    return source_name, []
-
-            # 使用 asyncio.gather + return_exceptions=True 隔离失败
-            results = await asyncio.gather(
-                *[collect_from_source(s) for s in self.sources],
-                return_exceptions=True
-            )
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.warning("来源任务异常: %s", result)
-                    continue
-                source_name, tracks = result
-                all_candidates.extend(tracks)
-                per_source_stats[source_name] = len(tracks)
 
         # 去重
         unique_candidates = self._deduplicate(all_candidates)
