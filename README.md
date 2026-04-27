@@ -22,7 +22,10 @@
 - **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索
 - **锚点入单**：锚点歌曲自动加入最终歌单，作为 Set 的核心曲目
 - **一键建单**：自动创建网易云歌单并批量收藏入选曲目
-- **智能命名**：自动生成 `🎧 DJ Curator · {模式} · {艺人}` 格式歌单名，一眼识别来源和氛围
+- **智能命名**：自动生成 `[DJ Curator] {模式} | {艺人}` 格式歌单名，一眼识别来源和氛围
+- **预览模式**：`--dry-run` 只预览候选池和预测选曲，不创建歌单
+- **分阶段状态**：实时显示当前阶段（连接/采集/分析/选曲/创建）
+- **软超时保护**：音频分析 120 秒上限，超时自动跳过，不阻塞流程
 
 ## 前置依赖
 
@@ -39,8 +42,12 @@
 3. **登录网易云音乐**
 
    ```bash
-   cloud-music-mcp
-   # 在 MCP Client 中调用 cloud_music_login 扫码登录
+   # 使用独立登录脚本（推荐，不阻塞 MCP server）
+   python3 scripts/login.py
+   # 扫码后自动保存登录状态
+   
+   # 或检查当前登录状态
+   python3 scripts/login.py --check
    ```
 
 ## 安装
@@ -111,6 +118,14 @@ dj-curator -a "Radiohead - Everything In Its Right Place" \
   --verbose
 ```
 
+### 预览模式（不创建歌单）
+
+```bash
+dj-curator -a "keshi - WANTCHU" --dry-run --verbose
+```
+
+输出候选池和预测选曲，但不实际创建网易云歌单。
+
 ### 调整多样性
 
 ```bash
@@ -145,7 +160,8 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 | `--arrange` | `-r` | `flat` | 能量曲线模式: flat/warm-up/peak-mid/rollercoaster/climax-end |
 | `--expand` / `--no-expand` | | `True` | 候选不足时启用级联扩展 |
 | `--verbose` | `-v` | `False` | 显示详细选曲列表和过渡评分 |
-| `--server` | | `cloud-music-mcp` | MCP Server 命令 |
+| `--dry-run` | | `False` | 预览模式，只显示候选和预测选曲，不创建歌单 |
+| `--server` | | `cloud-music-mcp` | MCP Server 命令（支持环境变量/配置文件覆盖） |
 
 ## 引擎架构
 
@@ -182,17 +198,19 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 
 ### 多源采集详情
 
-| 来源 | 机制 | 预期贡献 |
-|------|------|----------|
-| **SimilarSource** | 网易云 `simi/song` API | 10-20 首，风格最接近锚点 |
-| **ArtistTopSource** | `GetArtistTracks` API | 8-12 首，同艺术家热门 |
-| **CrossArtistSource** | `simi/artist` API → 热门歌曲 | 15-25 首，**真正风格相近的其他艺人** |
-| **GenreSearchSource** | BPM 推断流派 → 搜索 | 3-8 首，跨流派探索 |
-| **AlbumSource** | `GetAlbumInfo` API | 0-5 首（单曲专辑可能为 0） |
-| **DailyRecSource** | 搜索艺术家名字 | 5-8 首 |
-| **TagSearchSource** | 搜索 "artist 热门" | 3-5 首 |
+| 来源 | 机制 | 预期贡献 | 容错 |
+|------|------|----------|------|
+| **SimilarSource** | 网易云 `simi/song` API | 10-20 首 | 失败不影响其他源 |
+| **ArtistTopSource** | `GetArtistTracks` API | 8-12 首 | 未登录时自动跳过 |
+| **CrossArtistSource** | `simi/artist` API → 热门歌曲 | 15-25 首 | 15s API 超时保护 |
+| **GenreSearchSource** | BPM 推断流派 → 搜索 | 3-8 首 | 失败返回空列表 |
+| **AlbumSource** | `GetAlbumInfo` API | 0-5 首 | 单曲专辑自动跳过 |
+| **DailyRecSource** | 搜索艺术家名字 | 5-8 首 | 搜索失败不阻塞 |
+| **TagSearchSource** | 搜索 "artist 热门" | 3-5 首 | 搜索失败不阻塞 |
 
-**CrossArtistSource 是核心升级**：使用网易云官方 `/simi/artist` API（非搜索关键词匹配），返回真正风格相近的艺人（如 keshi → Lauv, Demxntia, The Weeknd, JVKE），再获取他们的热门歌曲。质量远高于搜索方案。
+**采集策略**：串行采集 + 每个 source 30 秒超时保护。避免 `asyncio.gather` 与 `anyio` 并发冲突导致的死锁。
+
+**CrossArtistSource 是核心升级**：使用网易云官方 `/simi/artist` API，返回真正风格相近的艺人（如 keshi → Lauv, Demxntia, The Weeknd, JVKE），再获取他们的热门歌曲。质量远高于搜索方案。
 
 ### 过滤策略
 
@@ -240,8 +258,9 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 - **粗粒度**（所有候选）：`energy = BPM × 0.5` + 歌曲名关键词 heuristics
   - 高能量词：remix / club / bass / drop → +8
   - 低能量词：acoustic / piano / sleep / chill → -12
-- **全量精分析**（所有缺失 BPM/Key 的候选）：librosa `beat_track` + `chroma_cqt`，并发 batch=10
-  - 不再限制前 25 首，候选池内全部分析
+- **全量精分析**（所有缺失 BPM/Key 的候选）：librosa `beat_track` + `chroma_cqt`
+  - 按能量优先级排序，优先分析接近锚点能量的候选
+  - **120 秒软超时**：超时自动跳过，剩余候选用 heuristics 能量继续
   - 分析结果缓存到 `analysis_cache.json`，永久复用
 - **入选后精能量**（最终入选歌曲）：librosa RMS 能量分析，替换 heuristics 能量
 - **VIP 歌曲**：粗粒度能量 100% 可用，不阻塞流程
@@ -269,15 +288,18 @@ dj-set-curator/
 │   ├── __init__.py
 │   ├── __main__.py          # python -m 入口
 │   ├── cli.py               # CLI 界面
-│   ├── mcp_client.py        # MCP Client 封装
+│   ├── config.py            # 配置管理（环境变量/配置文件）
+│   ├── mcp_client.py        # MCP Client 封装（重试+降级）
 │   ├── anchor.py            # 锚点歌曲解析
-│   ├── curator.py           # 选曲引擎核心（v0.2.0 过渡评分架构）
+│   ├── curator.py           # 选曲引擎核心（v0.2.1 全量分析+状态机）
 │   ├── filters.py           # 预过滤引擎（Camelot Wheel + BPM）
 │   ├── transition.py        # Pair-wise 过渡评分 + 贪心序列构建
-│   ├── sources.py           # 多源候选采集器（7 个来源）
+│   ├── sources.py           # 多源候选采集器（串行+超时保护）
 │   ├── arranger.py          # 能量分析器（librosa RMS）
 │   ├── audio_analyzer.py    # 音频分析（BPM/Key，librosa）
 │   └── models.py            # 数据模型
+├── scripts/
+│   └── login.py             # 独立二维码登录脚本
 ├── tests/
 │   ├── test_anchor.py
 │   ├── test_filters.py
@@ -300,10 +322,19 @@ python -m dj_set_curator --anchor "Song Name" --name "Playlist"
 
 ## 注意事项
 
-1. **登录状态**：使用前确保 `cloud-music-mcp-extended` 已完成扫码登录
-2. **音频分析**：首次分析歌曲需要下载音频片段（约 5-10 秒/首），分析结果会自动缓存
+1. **登录状态**：使用 `python3 scripts/login.py` 扫码登录，或检查 `python3 scripts/login.py --check`
+2. **音频分析**：首次分析需要下载音频片段（约 5-10 秒/首），120 秒软超时保护，分析结果自动缓存
 3. **API 限制**：频繁调用可能被限流，建议合理使用
 4. **版权**：音频分析仅使用网易云提供的试听链接，不保存完整音频文件
+5. **缓存位置**：默认 `~/Library/Caches/dj-set-curator/` (macOS)，可通过 `DJ_SET_CURATOR_CACHE_DIR` 环境变量覆盖
+6. **MCP Server 路径**：默认 `cloud-music-mcp`，可通过 `--server`、环境变量 `DJ_CURATOR_MCP_SERVER`、或配置文件 `~/.dj-set-curator/config.yaml` 覆盖
+
+### 配置文件示例
+
+```yaml
+# ~/.dj-set-curator/config.yaml
+mcp_server_command: "/tmp/mcp-server-wrapper.sh"
+```
 
 ## 依赖项目
 
