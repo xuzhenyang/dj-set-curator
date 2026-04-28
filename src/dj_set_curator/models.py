@@ -22,6 +22,7 @@ class Song:
     key: Optional[str] = None
     energy: Optional[float] = None
     genre_tags: list[str] = field(default_factory=list)
+    structure: Optional[dict] = None  # intro_sec, breakdown_sec, outro_sec 等
 
     @classmethod
     def from_dict(cls, data: dict) -> "Song":

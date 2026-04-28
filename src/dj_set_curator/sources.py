@@ -275,7 +275,11 @@ class StyleSongSource(CandidateSource):
 
 
 class GenreSearchSource(CandidateSource):
-    """流派搜索源 - Fallback：基于 BPM 推断流派关键词搜索"""
+    """流派搜索源 - 优先使用曲风层级树，fallback 到 BPM 推断
+
+    DJ 视角：这是兜底来源。当其他来源不够时，通过曲风标签或 BPM
+    推断流派关键词来获取候选。
+    """
 
     BPM_GENRE_MAP = [
         (0, 80, ["欧美 R&B", "欧美 soul", "抒情", "lofi"]),
@@ -285,7 +289,76 @@ class GenreSearchSource(CandidateSource):
         (150, 999, ["drum and bass", "hardstyle", "速核"]),
     ]
 
+    def __init__(self, mcp_client: CloudMusicMCPClient, hierarchy=None):
+        super().__init__(mcp_client)
+        self.hierarchy = hierarchy
+
     async def collect(self, anchor: dict) -> list[Song]:
+        # 优先尝试曲风层级树
+        if self.hierarchy and self.hierarchy.is_loaded():
+            songs = await self._collect_by_style_tree(anchor)
+            if songs:
+                return songs
+
+        # Fallback: BPM 映射
+        return await self._collect_by_bpm(anchor)
+
+    async def _collect_by_style_tree(self, anchor: dict) -> list[Song]:
+        """通过曲风层级树获取同曲风歌曲"""
+        genre_tags = anchor.get("genre_tags", []) or []
+        if not genre_tags:
+            # 尝试从 wiki 获取
+            song_id = str(anchor.get("id", ""))
+            try:
+                wiki = await asyncio.wait_for(self.mcp.get_song_wiki(song_id), timeout=10.0)
+                genre_tags = wiki.get("genres", []) if isinstance(wiki, dict) else []
+            except Exception:
+                pass
+
+        if not genre_tags:
+            return []
+
+        all_tracks = []
+        seen_ids = {str(anchor.get("id", ""))}
+        anchor_artist = anchor.get("artist", "").lower()
+        anchor_name = anchor.get("name", "")
+
+        for g in genre_tags:
+            node = self.hierarchy.find(g)
+            if not node and "-" in str(g):
+                for part in [p.strip() for p in str(g).split("-") if p.strip()]:
+                    node = self.hierarchy.find(part)
+                    if node:
+                        break
+
+            if not node:
+                continue
+
+            logger.info("流派源(树): 曲风 '%s' → tagId=%s", g, node.tag_id)
+            try:
+                tracks = await asyncio.wait_for(
+                    self.mcp.get_style_songs(str(node.tag_id), size=10, sort=0),
+                    timeout=15.0,
+                )
+                for t in tracks:
+                    tid = str(t.get("id", ""))
+                    t_name = t.get("name", "")
+                    t_artist = t.get("artist", "").lower()
+                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                        if self._language_match(anchor_name, t_name):
+                            if not self._is_low_quality(t_name):
+                                seen_ids.add(tid)
+                                all_tracks.append(
+                                    Song(id=tid, name=t_name, artist=t.get("artist", "未知"))
+                                )
+            except Exception as e:
+                logger.warning("流派源(树): tagId=%s 失败 - %s", node.tag_id, e)
+
+        logger.info("流派源(树): 共获得 %d 首", len(all_tracks))
+        return all_tracks
+
+    async def _collect_by_bpm(self, anchor: dict) -> list[Song]:
+        """BPM 映射 fallback"""
         bpm = anchor.get("bpm")
         artist = anchor.get("artist", "")
         anchor_name = anchor.get("name", "")
@@ -306,10 +379,9 @@ class GenreSearchSource(CandidateSource):
         seen_ids = set()
         anchor_artist = artist.lower()
 
-        # 取前 2 个流派关键词，增加覆盖率
         for genre in genres[:2]:
             query = f"{genre} 热门"
-            logger.info("流派源: 搜索 '%s'...", query)
+            logger.info("流派源(BPM): 搜索 '%s'...", query)
             try:
                 tracks = await self.mcp.search_song(query)
                 for t in tracks[:8]:
@@ -322,9 +394,9 @@ class GenreSearchSource(CandidateSource):
                                 seen_ids.add(tid)
                                 all_tracks.append(t)
             except Exception as e:
-                logger.warning("流派源: '%s' 搜索失败 - %s", query, e)
+                logger.warning("流派源(BPM): '%s' 搜索失败 - %s", query, e)
 
-        logger.info("流派源: 共获得 %d 首（跨流派）", len(all_tracks))
+        logger.info("流派源(BPM): 共获得 %d 首", len(all_tracks))
         return all_tracks
 
 
@@ -416,7 +488,7 @@ class MultiSourceCollector:
             CrossArtistSource(mcp_client),  # 相似艺人 - 核心价值
             StyleSongSource(mcp_client, hierarchy),  # 曲风标签歌曲
             PlaylistSource(mcp_client),     # 歌单
-            GenreSearchSource(mcp_client),  # 流派搜索 - Fallback
+            GenreSearchSource(mcp_client, hierarchy),  # 流派搜索 - Fallback
         ]
 
     @staticmethod

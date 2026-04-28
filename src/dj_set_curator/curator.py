@@ -18,6 +18,10 @@ from dj_set_curator.playlist_naming import format_playlist_name
 from dj_set_curator.sources import MultiSourceCollector
 from dj_set_curator.transition import SequentialSelector, TransitionScorer
 
+# Lazy import to avoid circular dependency
+_energy_analyzer = None
+_structure_analyzer = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,10 +98,11 @@ class DJSetCurator:
                         anchor.bpm,
                         anchor.key,
                     )
-        # 尝试精分析锚点能量（复用同一个 EnergyAnalyzer 实例）
-        from dj_set_curator.arranger import EnergyAnalyzer
+        # 尝试精分析锚点能量和结构（复用同一个分析器实例）
+        from dj_set_curator.arranger import EnergyAnalyzer, SongStructureAnalyzer
 
         energy_analyzer = EnergyAnalyzer(self.mcp)
+        structure_analyzer = SongStructureAnalyzer(self.mcp)
         for anchor in anchors:
             if anchor.bpm is not None:
                 anchor_energy = anchor.bpm * 0.5
@@ -108,6 +113,19 @@ class DJSetCurator:
                 except Exception:
                     pass
                 anchor.energy = anchor_energy
+            # 分析锚点歌曲结构（异步，不阻塞主流程）
+            try:
+                struct = await structure_analyzer.analyze(anchor.id)
+                if struct:
+                    anchor.structure = struct
+                    logger.info(
+                        "锚点结构: %s - intro=%ds, breakdown=%s",
+                        anchor.name,
+                        struct.get("intro_sec", 0),
+                        struct.get("breakdown_sec", []),
+                    )
+            except Exception:
+                pass
 
         # 2.5 预加载曲风层级树（供 StyleSongSource 使用）
         genre_resolver = GenreResolver(self.mcp)
@@ -244,7 +262,7 @@ class DJSetCurator:
         if not selected:
             raise RuntimeError("筛选后没有符合条件的歌曲")
 
-        # 9. 对最终入选歌曲做精能量分析（可选，提升质量）
+        # 9. 对最终入选歌曲做精能量分析 + 结构分析（可选，提升质量）
         for s in selected:
             sid = str(s.song.id)
             try:
@@ -253,6 +271,12 @@ class DJSetCurator:
                     s.song.energy = precise_energy
             except Exception:
                 pass  # 保持 heuristics 能量
+            try:
+                struct = await structure_analyzer.analyze(sid)
+                if struct:
+                    s.song.structure = struct
+            except Exception:
+                pass
 
         # 10. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
         anchor_ids = [a.id for a in anchors]
@@ -289,11 +313,21 @@ class DJSetCurator:
         avg_score = sum(s.score for s in selected) / len(selected) if selected else 0
         total_tracks = len(track_ids)
 
+        # 收集结构信息用于返回
+        structures = {}
+        for a in anchors:
+            if a.structure:
+                structures[a.id] = a.structure
+        for s in selected:
+            if s.song.structure:
+                structures[s.song.id] = s.song.structure
+
         return {
             "playlist_id": playlist_id,
             "playlist_name": final_name,
             "anchors": anchors,
             "selected_songs": selected,
+            "structures": structures,
             "stats": {
                 "total_candidates": len(unique_candidates),
                 "filtered_count": total_tracks,

@@ -102,34 +102,62 @@ class TestStyleSongSource:
 
 
 class TestGenreSearchSource:
-    """Tests for GenreSearchSource BPM-based fallback."""
+    """Tests for GenreSearchSource style tree + BPM fallback."""
 
     @pytest.fixture
     def mcp(self):
         m = MagicMock()
         m.search_song = AsyncMock()
+        m.get_style_songs = AsyncMock()
+        m.get_song_wiki = AsyncMock()
         return m
 
+    @pytest.fixture
+    def hierarchy(self):
+        h = MagicMock()
+        h.is_loaded.return_value = True
+        node = MagicMock()
+        node.tag_id = 200
+        h.find.side_effect = lambda x: node if "techno" in str(x).lower() else None
+        return h
+
     @pytest.mark.asyncio
-    async def test_genre_source_uses_bpm_mapping(self, mcp):
-        """GenreSearchSource should use BPM to map genre keywords."""
-        from dj_set_curator.models import Song
-        mcp.search_song.return_value = [
-            Song(id="4001", name="Techno Rave", artist="DJ X"),
+    async def test_genre_source_uses_style_tree_when_loaded(self, mcp, hierarchy):
+        """Should use style tree when hierarchy is loaded and genre tags exist."""
+        mcp.get_style_songs.return_value = [
+            {"id": "4001", "name": "Techno Rave", "artist": "DJ X"},
         ]
 
-        anchor = {"id": "1", "name": "Anchor", "artist": "Artist", "bpm": 140}
-        src = GenreSearchSource(mcp)
+        anchor = {"id": "1", "name": "Anchor", "artist": "Artist", "genre_tags": ["Techno"]}
+        src = GenreSearchSource(mcp, hierarchy=hierarchy)
         songs = await src.collect(anchor)
 
         assert len(songs) == 1
         assert songs[0].name == "Techno Rave"
+        mcp.get_style_songs.assert_called()
+        mcp.search_song.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_genre_source_skips_without_bpm(self, mcp):
-        """Should skip if anchor has no BPM data."""
+    async def test_genre_source_falls_back_to_bpm_when_no_hierarchy(self, mcp):
+        """Should fallback to BPM mapping when hierarchy is not loaded."""
+        from dj_set_curator.models import Song
+        mcp.search_song.return_value = [
+            Song(id="5001", name="128 BPM Track", artist="DJ Y"),
+        ]
+
+        anchor = {"id": "1", "name": "Anchor", "artist": "Artist", "bpm": 128}
+        src = GenreSearchSource(mcp, hierarchy=None)
+        songs = await src.collect(anchor)
+
+        assert len(songs) == 1
+        assert songs[0].name == "128 BPM Track"
+        mcp.search_song.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_genre_source_skips_without_bpm_and_hierarchy(self, mcp):
+        """Should skip if anchor has no BPM and no hierarchy."""
         anchor = {"id": "1", "name": "Anchor", "artist": "Artist"}
-        src = GenreSearchSource(mcp)
+        src = GenreSearchSource(mcp, hierarchy=None)
         songs = await src.collect(anchor)
 
         assert songs == []
