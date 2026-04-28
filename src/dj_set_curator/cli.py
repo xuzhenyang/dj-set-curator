@@ -14,7 +14,7 @@ from rich import box
 
 from dj_set_curator.curator import DJSetCurator
 from dj_set_curator.mcp_client import CloudMusicMCPClient
-from dj_set_curator.config import get_mcp_server_command
+from dj_set_curator.config import get_mcp_server_command, get_config_path, save_config, load_config
 
 app = typer.Typer(
     name="dj-curator",
@@ -22,6 +22,28 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _show_config_help():
+    """显示配置文件帮助信息"""
+    config_path = get_config_path()
+    console.print(
+        Panel(
+            f"[bold yellow]MCP Server 未找到[/bold yellow]\n\n"
+            f"默认命令 [dim]cloud-music-mcp[/dim] 不在 PATH 中。\n"
+            f"请通过以下任一方式配置正确的 MCP Server 路径:\n\n"
+            f"[bold]1. 配置文件（推荐）[/bold]\n"
+            f"   编辑 [cyan]{config_path}[/cyan]:\n"
+            f"   [dim]mcp_server_command: /path/to/mcp-server-wrapper.sh[/dim]\n\n"
+            f"[bold]2. 环境变量[/bold]\n"
+            f"   [dim]export DJ_CURATOR_MCP_SERVER=/path/to/mcp-server-wrapper.sh[/dim]\n\n"
+            f"[bold]3. 命令行参数[/bold]\n"
+            f"   每次执行时添加 [dim]--server /path/to/mcp-server-wrapper.sh[/dim]\n\n"
+            f"也可以使用 [cyan]dj-curator config --mcp-server /path/to/server[/cyan] 一键设置。",
+            title="⚠️ 配置Required",
+            border_style="yellow",
+        )
+    )
 
 
 async def _check_login(mcp: CloudMusicMCPClient) -> bool:
@@ -32,7 +54,8 @@ async def _check_login(mcp: CloudMusicMCPClient) -> bool:
             Panel(
                 "[bold red]未登录网易云音乐[/bold red]\n"
                 "请先在 cloud-music-mcp-extended 中执行扫码登录:\n"
-                "  cloud-music-mcp (或使用 MCP Client 调用 cloud_music_login)",
+                "  cd ../cloud-music-mcp-extended\n"
+                "  python3 scripts/login.py",
                 title="⚠️ 登录Required",
                 border_style="red",
             )
@@ -90,7 +113,18 @@ def create(
 
     async def run():
         mcp_cmd = get_mcp_server_command(server_command)
-        async with CloudMusicMCPClient(server_command=mcp_cmd) as mcp:
+        try:
+            mcp_client = CloudMusicMCPClient(server_command=mcp_cmd)
+            await mcp_client.connect()
+        except FileNotFoundError:
+            _show_config_help()
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[bold red]连接 MCP Server 失败: {e}[/bold red]")
+            _show_config_help()
+            raise typer.Exit(1)
+
+        async with mcp_client as mcp:
             # 检查登录
             if not await _check_login(mcp):
                 raise typer.Exit(1)
@@ -211,6 +245,46 @@ def version():
     """显示版本信息"""
     from dj_set_curator import __version__
     console.print(f"dj-set-curator [bold cyan]{__version__}[/bold cyan]")
+
+
+@app.command()
+def config(
+    mcp_server: Optional[str] = typer.Option(
+        None, "--mcp-server",
+        help="设置 MCP Server 命令路径（持久化到配置文件）",
+    ),
+    show: bool = typer.Option(
+        False, "--show",
+        help="显示当前配置",
+    ),
+):
+    """查看和修改配置"""
+    config_path = get_config_path()
+
+    if show or (mcp_server is None):
+        cfg = load_config()
+        console.print(f"[bold]配置文件路径:[/bold] [cyan]{config_path}[/cyan]")
+        if cfg:
+            console.print("[bold]当前配置:[/bold]")
+            for k, v in cfg.items():
+                console.print(f"  {k}: [green]{v}[/green]")
+        else:
+            console.print("[dim]（暂无配置，使用默认值）[/dim]")
+        console.print(
+            f"\n[dim]提示: 使用 [cyan]dj-curator config --mcp-server /path/to/server[/cyan] 设置 MCP Server 路径[/dim]"
+        )
+        return
+
+    if mcp_server is not None:
+        cfg = load_config()
+        cfg["mcp_server_command"] = mcp_server
+        if save_config(cfg):
+            console.print(f"[bold green]✅ 配置已保存[/bold green]")
+            console.print(f"   mcp_server_command: [cyan]{mcp_server}[/cyan]")
+            console.print(f"   配置文件: [dim]{config_path}[/dim]")
+        else:
+            console.print(f"[bold red]❌ 配置保存失败[/bold red]")
+            raise typer.Exit(1)
 
 
 def main():

@@ -68,6 +68,44 @@ pip install -e .
 
 安装完成后，`dj-curator` 命令即可使用。
 
+## ⚡ 快速配置（必须）
+
+`dj-curator` 需要连接 `cloud-music-mcp-extended` MCP Server。如果默认命令 `cloud-music-mcp` 不在 PATH 中，**首次使用前必须配置路径**：
+
+### 方法 1：一键配置（推荐）
+
+```bash
+# 设置 MCP Server 路径（自动持久化到配置文件）
+dj-curator config --mcp-server /tmp/mcp-server-wrapper.sh
+
+# 验证配置
+dj-curator config --show
+```
+
+### 方法 2：手动编辑配置文件
+
+```bash
+# 配置文件路径：~/.dj-set-curator/config.yaml
+cat > ~/.dj-set-curator/config.yaml << 'EOF'
+mcp_server_command: /tmp/mcp-server-wrapper.sh
+EOF
+```
+
+### 方法 3：环境变量（临时）
+
+```bash
+export DJ_CURATOR_MCP_SERVER=/tmp/mcp-server-wrapper.sh
+dj-curator create -a "keshi - WANTCHU" --count 10
+```
+
+> **配置优先级**：命令行 `--server` > 环境变量 `DJ_CURATOR_MCP_SERVER` > 配置文件 `~/.dj-set-curator/config.yaml` > 默认 `cloud-music-mcp`
+
+配置完成后，**以后每次使用都不需要再指定 `--server`**：
+
+```bash
+dj-curator create -a "keshi - WANTCHU" --count 10 --arrange warm-up
+```
+
 ## 使用示例
 
 ### 自动生成歌单名（推荐）
@@ -76,10 +114,10 @@ pip install -e .
 
 ```bash
 # 单锚点 → 🎧 DJ Curator · Warm Up · keshi
-dj-curator -a "keshi - WANTCHU" --count 15 --arrange warm-up -v
+dj-curator create -a "keshi - WANTCHU" --count 15 --arrange warm-up -v
 
 # 多锚点 → 🎧 DJ Curator · Peak Mid · keshi × The Weeknd
-dj-curator \
+dj-curator create \
   -a "keshi - WANTCHU" \
   -a "The Weeknd - Blinding Lights" \
   --count 20 --arrange peak-mid
@@ -91,16 +129,16 @@ dj-curator \
 
 ```bash
 # → 🎧 DJ Curator · 周五晚 · Warm Up
-dj-curator -a "keshi - WANTCHU" -n "周五晚" --count 15 --arrange warm-up
+dj-curator create -a "keshi - WANTCHU" -n "周五晚" --count 15 --arrange warm-up
 
 # → 🎧 DJ Curator · Late Night Drive · Flat
-dj-curator -a "keshi - WANTCHU" -n "Late Night Drive" --arrange flat
+dj-curator create -a "keshi - WANTCHU" -n "Late Night Drive" --arrange flat
 ```
 
 ### 多锚点（打破同质化的最强手段）
 
 ```bash
-dj-curator \
+dj-curator create \
   -a "keshi - WANTCHU" \
   -a "The Weeknd - Blinding Lights" \
   --count 20
@@ -109,7 +147,7 @@ dj-curator \
 ### 使用歌曲 ID
 
 ```bash
-dj-curator -a "29732235" --name "Test Set" -v
+dj-curator create -a "29732235" --name "Test Set" -v
 ```
 
 ### 详细输出
@@ -117,7 +155,7 @@ dj-curator -a "29732235" --name "Test Set" -v
 添加 `-v` / `--verbose` 参数查看完整的选曲列表和过渡评分：
 
 ```bash
-dj-curator -a "Radiohead - Everything In Its Right Place" \
+dj-curator create -a "Radiohead - Everything In Its Right Place" \
   --name "Chill Electronic" \
   --count 15 \
   --verbose
@@ -126,7 +164,7 @@ dj-curator -a "Radiohead - Everything In Its Right Place" \
 ### 预览模式（不创建歌单）
 
 ```bash
-dj-curator -a "keshi - WANTCHU" --dry-run --verbose
+dj-curator create -a "keshi - WANTCHU" --dry-run --verbose
 ```
 
 输出候选池和预测选曲，但不实际创建网易云歌单。
@@ -135,7 +173,7 @@ dj-curator -a "keshi - WANTCHU" --dry-run --verbose
 
 ```bash
 # 默认值 0.8（80% 的歌曲来自不同艺术家）
-dj-curator -a "Daft Punk - One More Time" \
+dj-curator create -a "Daft Punk - One More Time" \
   --name "French House" \
   --diversity 0.5 \
   --count 25
@@ -144,13 +182,13 @@ dj-curator -a "Daft Punk - One More Time" \
 ### 级联扩展（候选不足时自动扩充）
 
 ```bash
-dj-curator -a "keshi - WANTCHU" --name "WANTCHU vibe" --count 20 --expand
+dj-curator create -a "keshi - WANTCHU" --name "WANTCHU vibe" --count 20 --expand
 ```
 
 ### 关闭级联扩展
 
 ```bash
-dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
+dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 ```
 
 ## CLI 参数说明
@@ -166,7 +204,7 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 | `--expand` / `--no-expand` | | `True` | 候选不足时启用级联扩展 |
 | `--verbose` | `-v` | `False` | 显示详细选曲列表和过渡评分 |
 | `--dry-run` | | `False` | 预览模式，只显示候选和预测选曲，不创建歌单 |
-| `--server` | | `cloud-music-mcp` | MCP Server 命令（支持环境变量/配置文件覆盖） |
+| `--server` | | `cloud-music-mcp` | MCP Server 命令（通常通过 [配置](#快速配置必须) 设置，无需每次指定） |
 
 ## 引擎架构
 
@@ -312,7 +350,7 @@ dj-set-curator/
 ├── src/dj_set_curator/
 │   ├── __init__.py
 │   ├── __main__.py          # python -m 入口
-│   ├── cli.py               # CLI 界面
+│   ├── cli.py               # CLI 界面（create / config / version）
 │   ├── config.py            # 配置管理（环境变量/配置文件）
 │   ├── mcp_client.py        # MCP Client 封装（重试+错误处理）
 │   ├── anchor.py            # 锚点歌曲解析（并行）
@@ -353,11 +391,11 @@ python -m dj_set_curator --anchor "Song Name" --name "Playlist"
 ## 注意事项
 
 1. **登录状态**：使用 `python3 scripts/login.py` 扫码登录，或检查 `python3 scripts/login.py --check`
-2. **音频分析**：首次分析需要下载音频片段（约 5-10 秒/首），120 秒软超时保护，分析结果自动缓存
-3. **API 限制**：频繁调用可能被限流，建议合理使用
-4. **版权**：音频分析仅使用网易云提供的试听链接，不保存完整音频文件
-5. **缓存位置**：默认 `~/Library/Caches/dj-set-curator/` (macOS)，可通过 `DJ_SET_CURATOR_CACHE_DIR` 环境变量覆盖
-6. **MCP Server 路径**：默认 `cloud-music-mcp`，可通过 `--server`、环境变量 `DJ_CURATOR_MCP_SERVER`、或配置文件 `~/.dj-set-curator/config.yaml` 覆盖
+2. **MCP Server 配置**：首次使用务必执行 [`dj-curator config --mcp-server /path/to/server`](#快速配置必须)，否则每次都要 `--server`
+3. **音频分析**：首次分析需要下载音频片段（约 5-10 秒/首），120 秒软超时保护，分析结果自动缓存
+4. **API 限制**：频繁调用可能被限流，建议合理使用
+5. **版权**：音频分析仅使用网易云提供的试听链接，不保存完整音频文件
+6. **缓存位置**：默认 `~/Library/Caches/dj-set-curator/` (macOS)，可通过 `DJ_SET_CURATOR_CACHE_DIR` 环境变量覆盖
 
 ### 配置文件示例
 
