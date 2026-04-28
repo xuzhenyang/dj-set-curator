@@ -282,7 +282,10 @@ class SongFilter:
             # 曲风兼容性
             anchor_genres = self._genre_resolver.get_anchor_genres(anchors)
             candidate_genres = candidate.genre_tags if candidate.genre_tags else self._genre_resolver.resolve(candidate)
-            genre_s = genre_compatibility_score(candidate_genres, anchor_genres)
+            genre_s = genre_compatibility_score(
+                candidate_genres, anchor_genres,
+                hierarchy=self._genre_resolver.hierarchy,
+            )
 
             base_total = (
                 bpm_s * weights.get("bpm", 0)
