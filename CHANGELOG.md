@@ -5,6 +5,47 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.2] - 2026-04-28
+
+### 新增
+
+- **多源采集全面重构**：移除冗余来源（DailyRecSource、TagSearchSource），新增高质量来源
+  - `StyleSongSource`：利用网易云官方曲风体系（`/api/style-tag/home/song`）获取同风格歌曲
+  - `PlaylistSource`：搜索包含锚点艺人的精选歌单，提取其中曲目（人类策展人质量）
+  - `CrossArtistSource` 增强：5 艺人/3 首 → **8 艺人/5 首**
+  - `ArtistTopSource` 增强：12 首 → **20 首**
+- **多维度 DJ 能量分析**：EnergyAnalyzer 从单一 RMS 升级为四维综合
+  - RMS 响度 25% + 节奏密度（onset 峰值）35% + 低频能量占比 25% + 频谱质心（亮度）15%
+- **动态能量曲线**：SequentialSelector 支持基于锚点能量分布的动态曲线（均值 ± 标准差），替代固定 0-100 范围
+- **歌曲结构分析**：`SongStructureAnalyzer` 检测 intro 长度和 breakdown 位置，结果随歌单返回
+- **GenreSearchSource 重写**：优先使用曲风层级树（tagId 搜索），fallback 到 BPM 映射
+- **集成测试**：新增 `tests/test_integration.py`（12 个测试覆盖新来源和编排器）
+- `Song` 模型新增 `structure` 字段
+
+### 变更
+
+- **过滤阈值放松**：`min_score` 30→20，`genre_threshold` 30→25，让 pair-wise 过渡评分承担更多筛选工作
+- `AlbumSource` 修复：正确从 `al` 键提取 `album_id`（API 返回 `al` 而非 `album`）
+- `MultiSourceCollector` 改为**并发采集**（`asyncio.gather`），7 个来源同时执行，大幅降低等待时间
+- 最终能量/结构分析改为**并发执行**（`asyncio.gather`），每首 15 秒超时
+- 锚点详情获取改为并发执行
+- 删除死代码 `EnergyArcArranger`（动态曲线逻辑已合并到 `SequentialSelector`）
+
+### 修复（Code Review）
+
+- **严重**：`SongFilter` 从不使用加载的 genre hierarchy —— 添加 `set_hierarchy()` 注入
+- **严重**：歌单总数超过 `--count`（锚点未计入）—— `effective_target = target_count - len(anchors)`
+- **严重**：BPM=0 被当作完美过渡（ratio=1.0 → score=100）—— 改为 `curr_bpm <= 0` 时返回 50
+- **主要**：艺人名子字符串匹配误排除（如 "E" 排除 "Eminem"）—— 改为 token 级匹配（按 `&/,/feat./ft.` 分割）
+- **主要**：`hasattr(a, "energy")` 恒为 True —— 改为 `a.energy is not None`
+- **主要**：`candidate_bpm=0` 时 `bpm_diff` 为 None —— 改为 `candidate_bpm is not None`
+- **主要**：`GenreResolver` fallback 评分在分数为 0 时错误穿透 —— 使用 `is not None` 判断
+- **主要**：`mcp_client._parse_result` 假设 `content[0].text` 存在 —— 添加 `hasattr` 守卫
+- **次要**：`expansion.py` 缺少 `asyncio` 导入 + `get_similar_songs` 未加超时
+- **次要**：`CrossArtistSource` 重试无间隔 —— 添加 0.5-1.0s sleep
+- **次要**：`Song.to_dict()` 遗漏 `structure` 字段
+- **次要**：`SequentialSelector` 目标能量曲线支持动态模式（接收 `anchor_energies`）
+
 ## [0.3.1] - 2026-04-28
 
 ### 新增

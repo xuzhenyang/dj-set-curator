@@ -2,7 +2,7 @@
 
 基于锚点歌曲的智能 DJ 选曲工具，调用网易云音乐 MCP Server 自动构建**可混音的 DJ Set 歌单**。
 
-> v0.3.0 核心升级：代码架构重构 + 全模块质量改进
+> v0.3.2 核心升级：多源采集重构 + 动态能量曲线 + 多维度音频分析
 
 ## 功能特性
 
@@ -11,15 +11,19 @@
   - BPM 兼容：支持 ±3% pitch、半速/倍速混音、±5/±10 BPM 分级
   - Key 过渡：DJ-proven Camelot 规则（+1 升能 / -1 降能 / ±2 张力 / relative 和谐）
   - 能量衔接：选曲时直接考虑目标能量曲线，避免事后硬重排
-- **多源采集**：7 个来源同时采集，候选池 40-80 首
+- **多源采集**：7 个来源并发采集，候选池 40-80 首
   - **相似推荐**（网易云官方 API）
-  - **艺术家热门**
-  - **相似艺人**（网易云 `/simi/artist` API，核心来源）
-  - **流派搜索**（基于 BPM 推断流派关键词）
-  - **同专辑**、**每日推荐**、**标签搜索**
+  - **艺术家热门**（20 首上限）
+  - **相似艺人**（网易云 `/simi/artist` API，8 艺人×5 首，核心来源）
+  - **曲风标签歌曲**（网易云官方曲风体系 `/api/style-tag/home/song`）
+  - **歌单挖掘**（搜索包含锚点艺人的精选歌单，人类策展质量）
+  - **流派搜索**（曲风层级树优先，BPM 映射 fallback）
+  - **同专辑**
 - **粗粒度能量估计**：BPM 代理 + 歌曲名 heuristics，VIP 歌曲 100% 可用
+- **多维度精能量分析**：librosa 四维综合（RMS 响度 + 节奏密度 + 低频占比 + 频谱质心）
 - **曲风层级树过滤**：基于网易云官方 644 个曲风标签的三级层级树，自动计算候选与锚点的风格兼容性
-- **能量曲线编排**：支持 flat / warm-up / peak-mid / rollercoaster / climax-end 五种模式
+- **动态能量曲线**：基于锚点能量分布的均值/标准差自适应曲线，支持 flat / warm-up / peak-mid / rollercoaster / climax-end 五种模式
+- **歌曲结构检测**：自动分析 intro 长度和 breakdown 位置
 - **级联扩展**：候选池不足时，自动用推荐歌曲作为二级锚点继续搜索
 - **锚点入单**：锚点歌曲自动加入最终歌单，作为 Set 的核心曲目
 - **一键建单**：自动创建网易云歌单并批量收藏入选曲目
@@ -175,10 +179,10 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
   ├─ SimilarSource          网易云相似推荐 API
   ├─ ArtistTopSource        艺术家热门歌曲
   ├─ CrossArtistSource      相似艺人 → 热门歌曲（核心来源）
-  ├─ GenreSearchSource      BPM 推断流派 → 关键词搜索
-  ├─ AlbumSource            同专辑歌曲
-  ├─ DailyRecSource         每日推荐模拟
-  └─ TagSearchSource        标签搜索
+  ├─ StyleSongSource        网易云官方曲风标签 API
+  ├─ PlaylistSource         搜索精选歌单 → 提取曲目
+  ├─ GenreSearchSource      曲风层级树优先 → BPM 映射 fallback
+  └─ AlbumSource            同专辑歌曲
   ↓
 去重 + 过滤（ID 去重 / 歌曲名去重 / 语言一致性 / 低质内容过滤）
   ↓
@@ -204,14 +208,14 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 | 来源 | 机制 | 预期贡献 | 容错 |
 |------|------|----------|------|
 | **SimilarSource** | 网易云 `simi/song` API | 10-20 首 | 失败不影响其他源 |
-| **ArtistTopSource** | `GetArtistTracks` API | 8-12 首 | 未登录时自动跳过 |
-| **CrossArtistSource** | `simi/artist` API → 热门歌曲 | 15-25 首 | 15s API 超时保护 |
-| **GenreSearchSource** | BPM 推断流派 → 搜索 | 3-8 首 | 失败返回空列表 |
+| **ArtistTopSource** | `GetArtistTracks` API (limit=20) | 15-20 首 | 未登录时自动跳过 |
+| **CrossArtistSource** | `simi/artist` API → 热门歌曲 (8×5) | 20-40 首 | 15s API 超时保护 + 重试 |
+| **StyleSongSource** | 曲风标签 `/style-tag/home/song` API | 10-15 首 | 层级树未加载时跳过 |
+| **PlaylistSource** | 搜索歌单 → 提取曲目 | 5-15 首 | 搜索失败不阻塞 |
+| **GenreSearchSource** | 曲风层级树 tagId 搜索 / BPM fallback | 5-10 首 | 双路径容错 |
 | **AlbumSource** | `GetAlbumInfo` API | 0-5 首 | 单曲专辑自动跳过 |
-| **DailyRecSource** | 搜索艺术家名字 | 5-8 首 | 搜索失败不阻塞 |
-| **TagSearchSource** | 搜索 "artist 热门" | 3-5 首 | 搜索失败不阻塞 |
 
-**采集策略**：串行采集 + 每个 source 30 秒超时保护。避免 `asyncio.gather` 与 `anyio` 并发冲突导致的死锁。
+**采集策略**：并发采集（`asyncio.gather`）+ 每个 source 30 秒超时保护。7 个来源同时执行，大幅降低等待时间。
 
 **CrossArtistSource 是核心升级**：使用网易云官方 `/simi/artist` API，返回真正风格相近的艺人（如 keshi → Lauv, Demxntia, The Weeknd, JVKE），再获取他们的热门歌曲。质量远高于搜索方案。
 
@@ -224,7 +228,7 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
 | **语言一致性** | 英文锚点过滤中文候选 | 避免跨语言噪音（如 keshi → 王可可） |
 | **低质内容过滤** | 排除 "DJ版"、"车载版"、"抖音"、"Cover" | 提升候选质量 |
 | **Artist 连续惩罚** | 同 artist 连续出现扣分递增 | 避免同质化 |
-| **曲风兼容性过滤** | 层级树评分 < 30 大幅降分 | 过滤风格差异大的候选 |
+| **曲风兼容性过滤** | 层级树评分 < 25 大幅降分 | 过滤风格差异大的候选（更宽松，让过渡评分发挥作用） |
 
 ### 曲风兼容性（层级树）
 
@@ -280,7 +284,10 @@ dj-curator -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-expand
   - 按能量优先级排序，优先分析接近锚点能量的候选
   - **120 秒软超时**：超时自动跳过，剩余候选用 heuristics 能量继续
   - 分析结果缓存到 `analysis_cache.json`，永久复用
-- **入选后精能量**（最终入选歌曲）：librosa RMS 能量分析，替换 heuristics 能量
+- **入选后精能量**（最终入选歌曲）：librosa 四维 DJ 能量分析
+  - RMS 响度 25% + 节奏密度（onset 峰值）35% + 低频占比 25% + 频谱质心 15%
+  - 并发执行，每首 15 秒超时
+- **歌曲结构分析**（最终入选 + 锚点）：检测 intro 长度和 breakdown 位置
 - **VIP 歌曲**：粗粒度能量 100% 可用，不阻塞流程
 
 ### 音频分析缓存
