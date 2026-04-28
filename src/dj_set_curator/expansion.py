@@ -1,5 +1,6 @@
 """级联扩展模块 - 用候选歌曲作为二级锚点扩展候选池"""
 
+import asyncio
 import logging
 
 from dj_set_curator.deduplicator import Deduplicator
@@ -56,7 +57,10 @@ class CascadeExpander:
         all_new = list(candidates)
         for song in extra_anchors:
             logger.info("获取二级锚点 '%s' 的相似推荐...", song.name)
-            similar = await self.mcp.get_similar_songs(str(song.id), limit=limit_per_anchor)
+            similar = await asyncio.wait_for(
+                self.mcp.get_similar_songs(str(song.id), limit=limit_per_anchor),
+                timeout=20.0,
+            )
             logger.info("二级锚点 '%s' 获得 %d 首相似推荐", song.name, len(similar))
             all_new.extend(similar)
 

@@ -440,7 +440,10 @@ def _fallback_score(tag_a: str, tag_b: str) -> Optional[float]:
         return 100.0
     key = (a, b)
     reverse = (b, a)
-    return GENRE_COMPATIBILITY_FALLBACK.get(key) or GENRE_COMPATIBILITY_FALLBACK.get(reverse)
+    val = GENRE_COMPATIBILITY_FALLBACK.get(key)
+    if val is not None:
+        return val
+    return GENRE_COMPATIBILITY_FALLBACK.get(reverse)
 
 
 def genre_compatibility_score(

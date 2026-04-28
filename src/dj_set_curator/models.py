@@ -47,6 +47,7 @@ class Song:
             "key": self.key,
             "energy": self.energy,
             "genre_tags": self.genre_tags,
+            "structure": self.structure,
         }
 
     def __repr__(self) -> str:

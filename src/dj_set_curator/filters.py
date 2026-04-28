@@ -71,6 +71,10 @@ class SongFilter:
         self.genre_threshold = 15.0  # 曲风兼容性低于此值时惩罚（DJ视角：过渡曲目可能风格不同但可混音）
         self._genre_resolver = GenreResolver()
 
+    def set_hierarchy(self, hierarchy) -> None:
+        """注入已加载的曲风层级树"""
+        self._genre_resolver._hierarchy = hierarchy
+
     def _extract_bpm(self, song: Song) -> Optional[float]:
         """从歌曲信息中提取 BPM（如有）"""
         return song.bpm
@@ -324,7 +328,7 @@ class SongFilter:
                 ScoredSong(
                     song=candidate,
                     score=round(total, 1),
-                    bpm_diff=candidate_bpm - anchor_bpms[0] if candidate_bpm and anchor_bpms else None,
+                    bpm_diff=candidate_bpm - anchor_bpms[0] if candidate_bpm is not None and anchor_bpms else None,
                     key_distance=min(self._key_distance(candidate_key, ak) for ak in anchor_keys) if candidate_key and anchor_keys else None,
                     match_reasons=reasons,
                 )

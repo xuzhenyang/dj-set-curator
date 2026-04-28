@@ -11,7 +11,7 @@ from dj_set_curator.sources import (
     CrossArtistSource,
     GenreSearchSource,
 )
-from dj_set_curator.arranger import EnergyArcArranger, SongStructureAnalyzer
+from dj_set_curator.arranger import SongStructureAnalyzer
 from dj_set_curator.models import Song, ScoredSong
 
 
@@ -164,51 +164,30 @@ class TestGenreSearchSource:
         mcp.search_song.assert_not_called()
 
 
-class TestEnergyArcArranger:
-    """Tests for EnergyArcArranger dynamic curves."""
+class TestSequentialSelectorDynamicCurve:
+    """Tests for SequentialSelector with dynamic curves."""
 
-    @pytest.fixture
-    def mcp(self):
-        return MagicMock()
-
-    def test_target_curve_dynamic(self, mcp):
-        """Dynamic curve should be based on anchor energy mean and std."""
-        arranger = EnergyArcArranger(mcp)
-
-        # 锚点能量均值 60, 标准差 12
-        curve = arranger._get_target_curve(10, anchor_mean=60.0, anchor_std=12.0)
-
-        # 检查曲线范围
+    def test_dynamic_curve_based_on_anchor_energies(self):
+        """When anchor_energies provided, curve should be centered on anchor mean."""
+        from dj_set_curator.transition import SequentialSelector, TransitionScorer
+        scorer = TransitionScorer(bpm_tolerance=5.0)
+        selector = SequentialSelector(
+            scorer, arrange_mode="warm-up", anchor_energies=[55.0, 60.0, 58.0]
+        )
+        curve = selector._get_target_energies(10)
         assert min(curve) >= 10
         assert max(curve) <= 95
         assert all(10 <= e <= 95 for e in curve)
+        # 均值应该接近锚点均值 57.7
+        assert abs(np.mean(curve) - 57.7) < 10
 
-        # 峰值/谷值应该围绕锚点均值
-        assert abs(np.mean(curve) - 60.0) < 10
-
-    def test_target_curve_default(self, mcp):
-        """Default curve should work without anchor energies."""
-        arranger = EnergyArcArranger(mcp)
-        curve = arranger._get_target_curve(10)
-
-        assert min(curve) >= 10
-        assert max(curve) <= 95
-        assert len(curve) == 10
-
-    def test_arrange_by_curve_with_anchors(self, mcp):
-        """_arrange_by_curve should accept anchor_energies parameter."""
-        arranger = EnergyArcArranger(mcp)
-
-        inner_songs = [Song(id=str(i), name=f"Song {i}", artist="A", energy=float(i*10)) for i in range(1, 8)]
-        scored = [ScoredSong(song=s, score=50.0) for s in inner_songs]
-        energies = {s.song.id: s.song.energy for s in scored}
-        anchor_energies = [50.0, 55.0, 60.0, 52.0]
-
-        result = arranger._arrange_by_curve(
-            scored, energies, bpm_tolerance=10.0, anchor_energies=anchor_energies
-        )
-
-        assert len(result) == len(scored)
+    def test_fixed_curve_without_anchor_energies(self):
+        """Without anchor_energies, should use fixed curve."""
+        from dj_set_curator.transition import SequentialSelector, TransitionScorer
+        scorer = TransitionScorer(bpm_tolerance=5.0)
+        selector = SequentialSelector(scorer, arrange_mode="flat")
+        curve = selector._get_target_energies(10)
+        assert all(e == 50.0 for e in curve)
 
 
 class TestSongStructureAnalyzer:

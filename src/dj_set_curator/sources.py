@@ -46,6 +46,24 @@ class CandidateSource:
         return any(kw in name.lower() for kw in lowq)
 
     @staticmethod
+    def _artist_match(anchor_artist: str, candidate_artist: str) -> bool:
+        """检查 candidate_artist 是否包含 anchor_artist（token 级别匹配，避免子字符串误匹配）
+
+        例如 anchor_artist='E' 不应匹配 candidate_artist='Eminem'
+        """
+        if not anchor_artist:
+            return False
+        anchor = anchor_artist.lower().strip()
+        cand = candidate_artist.lower().strip()
+        # 直接完全匹配
+        if anchor == cand:
+            return True
+        # 分割候选艺人的合作标记，检查是否有 token 完全匹配
+        separators = r"[,/&、]|\bfeat\.?|\bft\.?|\bwith\b|\bx\b"
+        parts = [p.strip() for p in re.split(separators, cand) if p.strip()]
+        return anchor in parts
+
+    @staticmethod
     def _songs_to_objects(raw_songs: list[dict]) -> list[Song]:
         """将原始歌曲数据转为 Song 对象"""
         result = []
@@ -157,8 +175,12 @@ class CrossArtistSource(CandidateSource):
                     break
             except asyncio.TimeoutError:
                 logger.warning("跨艺术家源: 获取相似艺人超时 (attempt %d)", attempt + 1)
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
             except Exception as e:
                 logger.warning("跨艺术家源: 获取相似艺人失败 - %s", e)
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
 
         if not similar_artists:
             logger.warning("跨艺术家源: 无相似艺人")
@@ -178,10 +200,13 @@ class CrossArtistSource(CandidateSource):
                     )
                 except asyncio.TimeoutError:
                     if attempt == 0:
+                        await asyncio.sleep(0.5)
                         continue
                     logger.debug("跨艺术家源: 获取艺人 %s 歌曲超时", sa.get("name"))
                 except Exception:
-                    pass
+                    if attempt == 0:
+                        await asyncio.sleep(0.5)
+                        continue
             return []
 
         results = await asyncio.gather(*[fetch_artist_tracks(sa) for sa in target_artists])
@@ -191,7 +216,7 @@ class CrossArtistSource(CandidateSource):
                 tid = str(t.id)
                 t_artist = t.artist.lower()
                 t_name = t.name
-                if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                if tid and tid not in seen_ids and not self._artist_match(anchor_artist, t_artist):
                     if self._language_match(anchor_name, t_name):
                         if not self._is_low_quality(t_name):
                             seen_ids.add(tid)
@@ -260,7 +285,7 @@ class StyleSongSource(CandidateSource):
                     tid = str(t.get("id", ""))
                     t_name = t.get("name", "")
                     t_artist = t.get("artist", "").lower()
-                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                    if tid and tid not in seen_ids and not self._artist_match(anchor_artist, t_artist):
                         if self._language_match(anchor_name, t_name):
                             if not self._is_low_quality(t_name):
                                 seen_ids.add(tid)
@@ -344,7 +369,7 @@ class GenreSearchSource(CandidateSource):
                     tid = str(t.get("id", ""))
                     t_name = t.get("name", "")
                     t_artist = t.get("artist", "").lower()
-                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                    if tid and tid not in seen_ids and not self._artist_match(anchor_artist, t_artist):
                         if self._language_match(anchor_name, t_name):
                             if not self._is_low_quality(t_name):
                                 seen_ids.add(tid)
@@ -388,7 +413,7 @@ class GenreSearchSource(CandidateSource):
                     tid = str(t.id)
                     t_artist = t.artist.lower()
                     t_name = t.name
-                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                    if tid and tid not in seen_ids and not self._artist_match(anchor_artist, t_artist):
                         if self._language_match(anchor_name, t_name):
                             if not self._is_low_quality(t_name):
                                 seen_ids.add(tid)
@@ -462,7 +487,7 @@ class PlaylistSource(CandidateSource):
                     t_name = t.get("name", "")
                     t_artist = t.get("artist", "").lower()
                     if tid and tid not in seen_ids and tid != anchor_id:
-                        if anchor_artist not in t_artist:
+                        if not self._artist_match(anchor_artist, t_artist):
                             if self._language_match(anchor_name, t_name):
                                 if not self._is_low_quality(t_name):
                                     seen_ids.add(tid)
@@ -510,18 +535,23 @@ class MultiSourceCollector:
             anchor_name = anchor.get("name", "未知")
             logger.info("为多源采集锚点: %s", anchor_name)
 
-            for source in self.sources:
+            async def _fetch(source):
                 source_name = source.__class__.__name__
                 try:
-                    logger.info("来源 %s: 开始采集...", source_name)
                     tracks = await asyncio.wait_for(source.collect(anchor), timeout=30.0)
-                    all_candidates.extend(tracks)
-                    per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
-                    logger.info("来源 %s: 采集完成 (%d 首)", source_name, len(tracks))
+                    return source_name, tracks
                 except asyncio.TimeoutError:
                     logger.warning("来源 %s 采集超时", source_name)
+                    return source_name, []
                 except Exception as e:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
+                    return source_name, []
+
+            results = await asyncio.gather(*[_fetch(src) for src in self.sources])
+            for source_name, tracks in results:
+                all_candidates.extend(tracks)
+                per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
+                logger.info("来源 %s: 采集完成 (%d 首)", source_name, len(tracks))
 
         unique_candidates = self._deduplicate(all_candidates)
         logger.info("多源采集完成: %d 首候选（去重前 %d 首）", len(unique_candidates), len(all_candidates))

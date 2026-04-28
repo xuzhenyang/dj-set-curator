@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Optional, Union
 
+import numpy as np
+
 from dj_set_curator.filters import SongFilter
 from dj_set_curator.models import AnchorSong, ScoredSong, Song
 
@@ -33,16 +35,18 @@ class TransitionScorer:
         if curr_bpm is None or next_bpm is None:
             return 50.0  # 无数据时给中等分
 
-        # 1. 直接匹配 ±3%
-        ratio = next_bpm / curr_bpm if curr_bpm > 0 else 1.0
+        # 1. 直接匹配 ±3%（curr_bpm 为 0 或 None 时不应给满分）
+        if curr_bpm is None or curr_bpm <= 0:
+            return 50.0  # 未知 BPM，给中等分
+        ratio = next_bpm / curr_bpm
         if 0.97 <= ratio <= 1.03:
             return 100.0
 
         # 2. 半速/倍速兼容（×2 或 ÷2，±5% 容差）
-        half_double_ratio = next_bpm / (curr_bpm * 2) if curr_bpm > 0 else 1.0
+        half_double_ratio = next_bpm / (curr_bpm * 2)
         if 0.95 <= half_double_ratio <= 1.05:
             return 85.0
-        half_double_ratio_inv = next_bpm / (curr_bpm / 2) if curr_bpm > 0 else 1.0
+        half_double_ratio_inv = next_bpm / (curr_bpm / 2)
         if 0.95 <= half_double_ratio_inv <= 1.05:
             return 85.0
 
@@ -219,7 +223,7 @@ class TransitionScorer:
 class SequentialSelector:
     """贪心序列构建器 - 从锚点开始逐步选择最佳下一首"""
 
-    # 预设能量曲线（与 arranger.py 保持一致）
+    # 预设能量曲线（绝对值，0-100 范围）
     ARC_CURVES = {
         "flat": lambda n, i: 50.0,
         "warm-up": lambda n, i: 30 + 40 * (1 - abs(2 * i / max(n - 1, 1) - 1)),
@@ -228,12 +232,42 @@ class SequentialSelector:
         "climax-end": lambda n, i: 30 + 50 * (i / max(n - 1, 1)),
     }
 
-    def __init__(self, scorer: TransitionScorer, arrange_mode: str = "flat"):
+    # 相对曲线形状（偏移量，-1 到 +1），用于动态曲线
+    ARC_SHAPES = {
+        "flat": lambda n, i: 0.0,
+        "warm-up": lambda n, i: -0.8 + 1.6 * (1 - abs(2 * i / max(n - 1, 1) - 1)),
+        "peak-mid": lambda n, i: -0.6 + 1.6 * max(0, 1 - abs(2 * i / max(n - 1, 1) - 1.2)),
+        "rollercoaster": lambda n, i: 0.3 * (1 if i % 2 == 0 else -1) * (1 - i / max(n, 1)),
+        "climax-end": lambda n, i: -0.8 + 1.6 * (i / max(n - 1, 1)),
+    }
+
+    def __init__(
+        self,
+        scorer: TransitionScorer,
+        arrange_mode: str = "flat",
+        anchor_energies: Optional[list[float]] = None,
+    ):
         self.scorer = scorer
         self.arrange_mode = arrange_mode if arrange_mode in self.ARC_CURVES else "flat"
+        self.anchor_energies = anchor_energies
 
     def _get_target_energies(self, count: int) -> list[float]:
-        """生成目标能量曲线"""
+        """生成目标能量曲线（支持动态曲线）"""
+        if self.anchor_energies and len(self.anchor_energies) > 0:
+            # 动态曲线：基于锚点能量分布
+            anchor_mean = float(np.mean(self.anchor_energies))
+            anchor_std = max(float(np.std(self.anchor_energies)), 10.0)
+            shape_fn = self.ARC_SHAPES[self.arrange_mode]
+            curve = [
+                max(10.0, min(95.0, anchor_mean + shape_fn(count, i) * anchor_std))
+                for i in range(count)
+            ]
+            logger.info(
+                "动态能量曲线: 均值=%.1f, 标准差=%.1f, 范围=[%.1f, %.1f]",
+                anchor_mean, anchor_std, min(curve), max(curve),
+            )
+            return curve
+        # 固定曲线
         curve_fn = self.ARC_CURVES[self.arrange_mode]
         return [curve_fn(count, i) for i in range(count)]
 

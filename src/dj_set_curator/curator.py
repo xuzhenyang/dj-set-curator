@@ -127,15 +127,16 @@ class DJSetCurator:
             except Exception:
                 pass
 
-        # 2.5 预加载曲风层级树（供 StyleSongSource 使用）
+        # 2.5 预加载曲风层级树（供 StyleSongSource / GenreSearchSource / SongFilter 使用）
         genre_resolver = GenreResolver(self.mcp)
         await genre_resolver.load_style_hierarchy()
+        self.filter.set_hierarchy(genre_resolver.hierarchy)
 
         # 3. 多源采集候选歌曲
         t0 = time.time()
         collector = MultiSourceCollector(self.mcp, hierarchy=genre_resolver.hierarchy)
-        anchor_dicts = []
-        for a in anchors:
+
+        async def _fetch_anchor_detail(a: AnchorSong) -> dict:
             ad = {"id": a.id, "name": a.name, "artist": a.artist}
             try:
                 detail = await self.mcp.get_song_detail(a.id)
@@ -144,7 +145,9 @@ class DJSetCurator:
                     ad["album_id"] = detail.get("album_id")
             except Exception as e:
                 logger.warning("获取锚点详情失败: %s - %s", a.name, e)
-            anchor_dicts.append(ad)
+            return ad
+
+        anchor_dicts = await asyncio.gather(*[_fetch_anchor_detail(a) for a in anchors])
         all_candidates = await collector.collect(anchor_dicts)
         self._status = {
             "stage": "collection",
@@ -198,9 +201,7 @@ class DJSetCurator:
             candidate.energy = estimate_energy(candidate)
 
         # 按能量接近锚点平均值排序（优先分析能量匹配度高的）
-        anchor_energies = [
-            a.energy for a in anchors if hasattr(a, "energy") and a.energy is not None
-        ]
+        anchor_energies = [a.energy for a in anchors if a.energy is not None]
         anchor_avg_energy = sum(anchor_energies) / max(len(anchor_energies), 1)
         unique_candidates.sort(key=lambda x: abs((x.energy or 50) - anchor_avg_energy))
 
@@ -250,8 +251,15 @@ class DJSetCurator:
         # 8. 贪心序列构建（核心改变）
         t0 = time.time()
         scorer = TransitionScorer(bpm_tolerance=self.filter.bpm_tolerance)
-        selector = SequentialSelector(scorer, arrange_mode=arrange_mode)
-        selected = selector.select(filtered_candidates, anchors, target_count)
+        # 传递锚点能量给 selector，启用动态能量曲线
+        selector = SequentialSelector(
+            scorer,
+            arrange_mode=arrange_mode,
+            anchor_energies=anchor_energies if anchor_energies else None,
+        )
+        # target_count 应排除锚点数量（锚点会前置到最终歌单）
+        effective_target = max(0, target_count - len(anchors))
+        selected = selector.select(filtered_candidates, anchors, effective_target)
         self._status = {
             "stage": "selection",
             "progress": 80,
@@ -262,21 +270,27 @@ class DJSetCurator:
         if not selected:
             raise RuntimeError("筛选后没有符合条件的歌曲")
 
-        # 9. 对最终入选歌曲做精能量分析 + 结构分析（可选，提升质量）
-        for s in selected:
+        # 9. 对最终入选歌曲做精能量分析 + 结构分析（并发，带超时）
+        async def _refine_song(s: ScoredSong) -> None:
             sid = str(s.song.id)
             try:
-                precise_energy = await energy_analyzer.analyze_energy(sid)
+                precise_energy = await asyncio.wait_for(
+                    energy_analyzer.analyze_energy(sid), timeout=15.0
+                )
                 if precise_energy is not None:
                     s.song.energy = precise_energy
             except Exception:
-                pass  # 保持 heuristics 能量
+                pass
             try:
-                struct = await structure_analyzer.analyze(sid)
+                struct = await asyncio.wait_for(
+                    structure_analyzer.analyze(sid), timeout=15.0
+                )
                 if struct:
                     s.song.structure = struct
             except Exception:
                 pass
+
+        await asyncio.gather(*[_refine_song(s) for s in selected])
 
         # 10. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
         anchor_ids = [a.id for a in anchors]

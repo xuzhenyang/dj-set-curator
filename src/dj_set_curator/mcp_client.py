@@ -76,13 +76,14 @@ class CloudMusicMCPClient:
     def _parse_result(self, result: Any) -> Any:
         """解析 MCP tool 返回的结果"""
         if hasattr(result, "content") and result.content:
-            # 取第一个 content 的 text
-            text = result.content[0].text
-            # 尝试解析为 JSON
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return text
+            first = result.content[0]
+            if hasattr(first, "text"):
+                text = first.text
+                # 尝试解析为 JSON
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return text
         return result
 
     async def _call_tool(self, tool_name: str, arguments: dict, max_retries: int = 2) -> Any:
