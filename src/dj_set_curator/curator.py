@@ -109,9 +109,13 @@ class DJSetCurator:
                     pass
                 anchor.energy = anchor_energy
 
+        # 2.5 预加载曲风层级树（供 StyleSongSource 使用）
+        genre_resolver = GenreResolver(self.mcp)
+        await genre_resolver.load_style_hierarchy()
+
         # 3. 多源采集候选歌曲
         t0 = time.time()
-        collector = MultiSourceCollector(self.mcp)
+        collector = MultiSourceCollector(self.mcp, hierarchy=genre_resolver.hierarchy)
         anchor_dicts = []
         for a in anchors:
             ad = {"id": a.id, "name": a.name, "artist": a.artist}
@@ -146,7 +150,6 @@ class DJSetCurator:
 
         # 4.5 解析曲风标签（所有候选 + 锚点）
         t0 = time.time()
-        genre_resolver = GenreResolver(self.mcp)
         anchor_songs = [
             Song(id=anchor.id, name=anchor.name, artist=anchor.artist)
             for anchor in anchors

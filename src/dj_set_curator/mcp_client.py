@@ -292,6 +292,42 @@ class CloudMusicMCPClient:
             raise RuntimeError(f"获取曲风列表失败: {result}")
         return []
 
+    async def get_style_songs(self, tag_id: str, size: int = 20, sort: int = 0) -> list[dict]:
+        """获取指定曲风标签下的歌曲"""
+        result = await self._call_tool(
+            "cloud_music_get_style_songs",
+            {"tag_id": str(tag_id), "size": size, "sort": sort},
+        )
+        if isinstance(result, dict) and "songs" in result:
+            return result["songs"]
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"获取曲风歌曲失败: {result}")
+        return []
+
+    async def search_playlist(self, keyword: str, limit: int = 10) -> list[dict]:
+        """搜索歌单"""
+        result = await self._call_tool(
+            "cloud_music_search_playlist",
+            {"keyword": keyword, "limit": limit},
+        )
+        if isinstance(result, dict) and "playlists" in result:
+            return result["playlists"]
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"搜索歌单失败: {result}")
+        return []
+
+    async def get_playlist_songs(self, playlist_id: str, limit: int = 50) -> list[dict]:
+        """获取歌单中的所有歌曲"""
+        result = await self._call_tool(
+            "cloud_music_get_playlist_songs",
+            {"playlist_id": str(playlist_id), "limit": limit},
+        )
+        if isinstance(result, dict) and "songs" in result:
+            return result["songs"]
+        if isinstance(result, str) and ("失败" in result or "错误" in result):
+            raise RuntimeError(f"获取歌单歌曲失败: {result}")
+        return []
+
     async def add_tracks_to_playlist(self, playlist_id: str, track_ids: list[str]):
         """批量添加歌曲到歌单"""
         result = await self._call_tool(

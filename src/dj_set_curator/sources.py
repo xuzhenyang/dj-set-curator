@@ -1,4 +1,10 @@
-"""多源候选采集器 - 从网易云多个渠道收集候选歌曲"""
+"""多源候选采集器 - 从网易云多个渠道收集候选歌曲
+
+DJ 视角的来源设计：
+- 同专辑、同艺人、相似艺人 = 核心来源（风格一致性高）
+- 曲风标签、相似推荐、歌单 = 扩展来源（引入新鲜血液）
+- 避免冗余：不重复获取同一艺人的歌曲
+"""
 
 import asyncio
 import logging
@@ -23,22 +29,38 @@ class CandidateSource:
 
     @staticmethod
     def _has_chinese(text: str) -> bool:
-        """检查文本是否包含中文字符"""
         return bool(re.search(r'[\u4e00-\u9fff]', text))
 
     @staticmethod
     def _language_match(anchor_name: str, candidate_name: str) -> bool:
-        """
-        简单的语言一致性检查
-        如果锚点是英文歌名，候选也应该是英文歌名（减少跨语言噪音）
-        """
         anchor_has_cn = CandidateSource._has_chinese(anchor_name)
         cand_has_cn = CandidateSource._has_chinese(candidate_name)
-        # 锚点和候选语言一致时返回 True
-        # 特殊情况：都允许（不做严格限制），只排除"锚点英文但候选明显中文"的情况
         if not anchor_has_cn and cand_has_cn:
             return False
         return True
+
+    @staticmethod
+    def _is_low_quality(name: str) -> bool:
+        """检测低质内容"""
+        lowq = ["dj版", "车载版", "抖音", "cover", "伴奏", "铃声", "慢速版", "加速版"]
+        return any(kw in name.lower() for kw in lowq)
+
+    @staticmethod
+    def _songs_to_objects(raw_songs: list[dict]) -> list[Song]:
+        """将原始歌曲数据转为 Song 对象"""
+        result = []
+        for s in raw_songs:
+            try:
+                result.append(
+                    Song(
+                        id=str(s.get("id", "")),
+                        name=s.get("name", "未知"),
+                        artist=s.get("artist", "未知"),
+                    )
+                )
+            except Exception:
+                pass
+        return result
 
 
 class SimilarSource(CandidateSource):
@@ -51,7 +73,7 @@ class SimilarSource(CandidateSource):
         logger.info("相似推荐源: 获取 '%s' 的相似推荐...", anchor.get("name", song_id))
         similar = await self.mcp.get_similar_songs(song_id, limit=30)
         logger.info("相似推荐源: '%s' 获得 %d 首", anchor.get("name", song_id), len(similar))
-        return similar
+        return self._songs_to_objects(similar)
 
 
 class ArtistTopSource(CandidateSource):
@@ -61,8 +83,6 @@ class ArtistTopSource(CandidateSource):
         artist_id = anchor.get("artist_id")
         artist_name = anchor.get("artist", "")
         if not artist_id:
-            # 尝试通过搜索获取 artist_id
-            logger.debug("艺术家源: 尝试搜索 '%s' 获取 artist_id...", artist_name)
             detail = await self.mcp.get_song_detail(str(anchor.get("id", "")))
             artist_id = detail.get("artist_id") if isinstance(detail, dict) else None
             if not artist_id:
@@ -70,13 +90,13 @@ class ArtistTopSource(CandidateSource):
                 return []
 
         logger.info("艺术家源: 获取 '%s'(ID:%s) 的热门歌曲...", artist_name, artist_id)
-        tracks = await self.mcp.get_artist_tracks(str(artist_id), limit=12)
+        tracks = await self.mcp.get_artist_tracks(str(artist_id), limit=20)
         logger.info("艺术家源: '%s' 获得 %d 首", artist_name, len(tracks))
-        return tracks
+        return self._songs_to_objects(tracks)
 
 
 class AlbumSource(CandidateSource):
-    """同专辑歌曲源"""
+    """同专辑歌曲源 - DJ 金矿"""
 
     async def collect(self, anchor: dict) -> list[Song]:
         album_id = anchor.get("album_id")
@@ -90,81 +110,179 @@ class AlbumSource(CandidateSource):
 
         logger.info("专辑源: 获取专辑(ID:%s) 的歌曲...", album_id)
         tracks = await self.mcp.get_album_songs(str(album_id))
-        # 移除锚点歌曲本身
         anchor_id = str(anchor.get("id", ""))
         tracks = [t for t in tracks if str(t.id) != anchor_id]
         logger.info("专辑源: 获得 %d 首（不含锚点）", len(tracks))
         return tracks
 
 
-class DailyRecSource(CandidateSource):
-    """每日推荐源"""
+class CrossArtistSource(CandidateSource):
+    """跨艺术家搜索源 - 使用网易云相似艺人 API 寻找风格相近的其他 artist
+    
+    DJ 视角：这是最有价值的来源之一。相似艺人的作品往往：
+    - 同一制作人圈子
+    - 同一厂牌
+    - BPM/Key/音色风格一致
+    """
+
+    MAX_ARTISTS = 8
+    TRACKS_PER_ARTIST = 5
+    TIMEOUT_SIMILAR = 20.0
+    TIMEOUT_TRACKS = 12.0
 
     async def collect(self, anchor: dict) -> list[Song]:
-        logger.info("每日推荐源: 获取今日推荐...")
-        # 每日推荐目前没有直接 MCP 工具，通过搜索风格标签模拟
-        # 使用锚点艺术家的风格搜索
-        artist = anchor.get("artist", "")
-        name = anchor.get("name", "")
-        if not artist:
-            return []
-        # 搜索 "artist_name" 的热门歌曲（类似 ArtistTopSource 但用搜索）
-        query = f"{artist}"
-        logger.info("每日推荐源: 搜索 '%s' 热门歌曲...", query)
-        try:
-            tracks = await self.mcp.search_song(query)
-            # 只取前 15 首，且排除锚点本身
-            anchor_id = str(anchor.get("id", ""))
-            tracks = [t for t in tracks[:8] if str(t.id) != anchor_id]
-            logger.info("每日推荐源: 获得 %d 首", len(tracks))
-            return tracks
-        except Exception as e:
-            logger.warning("每日推荐源: 搜索失败 - %s", e)
-            return []
+        artist_id = anchor.get("artist_id")
+        artist_name = anchor.get("artist", "")
+        anchor_name = anchor.get("name", "")
+        if not artist_id:
+            detail = await self.mcp.get_song_detail(str(anchor.get("id", "")))
+            artist_id = detail.get("artist_id") if isinstance(detail, dict) else None
+            if not artist_id:
+                logger.warning("跨艺术家源: 无法获取 '%s' 的 artist_id", artist_name)
+                return []
 
-
-class TagSearchSource(CandidateSource):
-    """标签搜索源 - 用风格标签搜索"""
-
-    async def collect(self, anchor: dict) -> list[Song]:
-        artist = anchor.get("artist", "")
-        name = anchor.get("name", "")
-        if not artist:
-            return []
-        # 尝试几种搜索组合
-        queries = [
-            f"{artist} 热门",
-        ]
         all_tracks = []
         seen_ids = set()
-        for query in queries:
-            logger.info("标签搜索源: 搜索 '%s'...", query)
+        anchor_artist = artist_name.lower()
+
+        # 获取相似艺人（带重试）
+        similar_artists = []
+        for attempt in range(2):
             try:
-                tracks = await self.mcp.search_song(query)
-                for t in tracks[:5]:
-                    tid = str(t.id)
-                    if tid and tid not in seen_ids:
-                        seen_ids.add(tid)
-                        all_tracks.append(t)
+                similar_artists = await asyncio.wait_for(
+                    self.mcp.get_similar_artists(str(artist_id)),
+                    timeout=self.TIMEOUT_SIMILAR,
+                )
+                if similar_artists:
+                    break
+            except asyncio.TimeoutError:
+                logger.warning("跨艺术家源: 获取相似艺人超时 (attempt %d)", attempt + 1)
             except Exception as e:
-                logger.warning("标签搜索源: '%s' 搜索失败 - %s", query, e)
-        # 排除锚点
-        anchor_id = str(anchor.get("id", ""))
-        all_tracks = [t for t in all_tracks if str(t.id) != anchor_id]
-        logger.info("标签搜索源: 共获得 %d 首", len(all_tracks))
+                logger.warning("跨艺术家源: 获取相似艺人失败 - %s", e)
+
+        if not similar_artists:
+            logger.warning("跨艺术家源: 无相似艺人")
+            return []
+
+        logger.info("跨艺术家源: '%s' 有 %d 个相似艺人", artist_name, len(similar_artists))
+
+        target_artists = [sa for sa in similar_artists[:self.MAX_ARTISTS] if sa.get("id")]
+        logger.info("跨艺术家源: 并发获取 %d 个相似艺人的热门歌曲...", len(target_artists))
+
+        async def fetch_artist_tracks(sa):
+            for attempt in range(2):
+                try:
+                    return await asyncio.wait_for(
+                        self.mcp.get_artist_tracks(str(sa["id"]), limit=self.TRACKS_PER_ARTIST),
+                        timeout=self.TIMEOUT_TRACKS,
+                    )
+                except asyncio.TimeoutError:
+                    if attempt == 0:
+                        continue
+                    logger.debug("跨艺术家源: 获取艺人 %s 歌曲超时", sa.get("name"))
+                except Exception:
+                    pass
+            return []
+
+        results = await asyncio.gather(*[fetch_artist_tracks(sa) for sa in target_artists])
+
+        for tracks in results:
+            for t in tracks:
+                tid = str(t.id)
+                t_artist = t.artist.lower()
+                t_name = t.name
+                if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                    if self._language_match(anchor_name, t_name):
+                        if not self._is_low_quality(t_name):
+                            seen_ids.add(tid)
+                            all_tracks.append(t)
+
+        logger.info("跨艺术家源: 共获得 %d 首（不同 artist）", len(all_tracks))
+        return all_tracks
+
+
+class StyleSongSource(CandidateSource):
+    """曲风标签歌曲源 - 利用网易云官方曲风体系获取同风格歌曲
+    
+    需要 StyleHierarchy 来映射曲风名称 → tagId
+    """
+
+    def __init__(self, mcp_client: CloudMusicMCPClient, hierarchy=None):
+        super().__init__(mcp_client)
+        self.hierarchy = hierarchy
+
+    async def collect(self, anchor: dict) -> list[Song]:
+        if not self.hierarchy or not self.hierarchy.is_loaded():
+            logger.debug("曲风歌曲源: 层级树未加载，跳过")
+            return []
+
+        # 获取锚点歌曲的 wiki 信息来提取曲风标签
+        song_id = str(anchor.get("id", ""))
+        anchor_name = anchor.get("name", "")
+        if not song_id:
+            return []
+
+        try:
+            wiki = await asyncio.wait_for(self.mcp.get_song_wiki(song_id), timeout=10.0)
+            genres = wiki.get("genres", [])
+        except Exception:
+            logger.debug("曲风歌曲源: 获取 wiki 失败")
+            return []
+
+        if not genres:
+            return []
+
+        # 从曲风标签映射到 tagId，获取同曲风歌曲
+        all_tracks = []
+        seen_ids = {song_id}
+        anchor_artist = anchor.get("artist", "").lower()
+
+        for g in genres:
+            # 尝试直接查找
+            node = self.hierarchy.find(g)
+            if not node and "-" in g:
+                # 复合标签拆分
+                for part in [p.strip() for p in g.split("-") if p.strip()]:
+                    node = self.hierarchy.find(part)
+                    if node:
+                        break
+
+            if not node:
+                continue
+
+            logger.info("曲风歌曲源: 曲风 '%s' → tagId=%s，获取同曲风歌曲...", g, node.tag_id)
+            try:
+                tracks = await asyncio.wait_for(
+                    self.mcp.get_style_songs(str(node.tag_id), size=15, sort=0),
+                    timeout=15.0,
+                )
+                for t in tracks:
+                    tid = str(t.get("id", ""))
+                    t_name = t.get("name", "")
+                    t_artist = t.get("artist", "").lower()
+                    if tid and tid not in seen_ids and anchor_artist not in t_artist:
+                        if self._language_match(anchor_name, t_name):
+                            if not self._is_low_quality(t_name):
+                                seen_ids.add(tid)
+                                all_tracks.append(
+                                    Song(id=tid, name=t_name, artist=t.get("artist", "未知"))
+                                )
+            except Exception as e:
+                logger.warning("曲风歌曲源: 获取 tagId=%s 失败 - %s", node.tag_id, e)
+
+        logger.info("曲风歌曲源: 共获得 %d 首", len(all_tracks))
         return all_tracks
 
 
 class GenreSearchSource(CandidateSource):
-    """流派搜索源 - 基于 BPM 推断流派并搜索相关歌曲"""
+    """流派搜索源 - Fallback：基于 BPM 推断流派关键词搜索"""
 
-    # BPM → 可能流派关键词映射（使用中文关键词，网易云对英文流派搜索效果差）
     BPM_GENRE_MAP = [
         (0, 80, ["欧美 R&B", "欧美 soul", "抒情", "lofi"]),
         (80, 110, ["欧美 indie", "欧美流行", "欧美民谣"]),
         (110, 130, ["电子", "舞曲", "house", "disco"]),
         (130, 150, ["电子", "techno", "edm", "电音"]),
-        (150, 999, [" drum and bass", "hardstyle", "速核"]),
+        (150, 999, ["drum and bass", "hardstyle", "速核"]),
     ]
 
     async def collect(self, anchor: dict) -> list[Song]:
@@ -175,7 +293,6 @@ class GenreSearchSource(CandidateSource):
             logger.info("流派源: 锚点无 BPM 数据，跳过")
             return []
 
-        # 根据 BPM 选择流派关键词
         genres = []
         for low, high, g_list in self.BPM_GENRE_MAP:
             if low <= bpm < high:
@@ -189,23 +306,19 @@ class GenreSearchSource(CandidateSource):
         seen_ids = set()
         anchor_artist = artist.lower()
 
-        # 搜索每个流派关键词 + "热门"
-        for genre in genres[:1]:  # 只取第 1 个流派，避免过多噪音
+        # 取前 2 个流派关键词，增加覆盖率
+        for genre in genres[:2]:
             query = f"{genre} 热门"
             logger.info("流派源: 搜索 '%s'...", query)
             try:
                 tracks = await self.mcp.search_song(query)
-                for t in tracks[:5]:
+                for t in tracks[:8]:
                     tid = str(t.id)
                     t_artist = t.artist.lower()
                     t_name = t.name
-                    # 过滤条件：
-                    # 1. 排除锚点 artist
-                    # 2. 语言一致性（避免跨语言噪音）
-                    # 3. 排除明显非音乐内容（DJ版、车载版等低质内容）
                     if tid and tid not in seen_ids and anchor_artist not in t_artist:
                         if self._language_match(anchor_name, t_name):
-                            if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
+                            if not self._is_low_quality(t_name):
                                 seen_ids.add(tid)
                                 all_tracks.append(t)
             except Exception as e:
@@ -215,96 +328,99 @@ class GenreSearchSource(CandidateSource):
         return all_tracks
 
 
-class CrossArtistSource(CandidateSource):
-    """跨艺术家搜索源 - 使用网易云相似艺人 API 寻找风格相近的其他 artist"""
+class PlaylistSource(CandidateSource):
+    """歌单来源 - 搜索包含锚点艺人/风格的相关歌单，获取歌单中的歌曲
+    
+    DJ 视角：用户创建的"R&B 深夜电台""卧室流行精选"等歌单
+    是人类策展人精心编排的，风格一致性极高
+    """
 
     async def collect(self, anchor: dict) -> list[Song]:
-        artist_id = anchor.get("artist_id")
-        artist_name = anchor.get("artist", "")
+        artist = anchor.get("artist", "")
         anchor_name = anchor.get("name", "")
-        if not artist_id:
-            # 尝试通过搜索获取 artist_id
-            detail = await self.mcp.get_song_detail(str(anchor.get("id", "")))
-            artist_id = detail.get("artist_id") if isinstance(detail, dict) else None
-            if not artist_id:
-                logger.warning("跨艺术家源: 无法获取 '%s' 的 artist_id", artist_name)
-                return []
+        if not artist:
+            return []
 
+        # 搜索策略：艺人名 + 精选/歌单
+        queries = [
+            f"{artist} 精选",
+            f"{artist} 歌单",
+        ]
+
+        all_playlists = []
+        seen_pl_ids = set()
+        for query in queries:
+            try:
+                playlists = await asyncio.wait_for(
+                    self.mcp.search_playlist(query, limit=5),
+                    timeout=15.0,
+                )
+                for pl in playlists:
+                    pl_id = str(pl.get("id", ""))
+                    if pl_id and pl_id not in seen_pl_ids:
+                        seen_pl_ids.add(pl_id)
+                        all_playlists.append(pl)
+            except Exception as e:
+                logger.debug("歌单源: 搜索 '%s' 失败 - %s", query, e)
+
+        if not all_playlists:
+            logger.info("歌单源: 未找到相关歌单")
+            return []
+
+        logger.info("歌单源: 找到 %d 个相关歌单", len(all_playlists))
+
+        # 取前 3 个歌单，获取歌曲
+        target_playlists = all_playlists[:3]
         all_tracks = []
         seen_ids = set()
-        anchor_artist = artist_name.lower()
+        anchor_artist = artist.lower()
+        anchor_id = str(anchor.get("id", ""))
 
-        # 1. 获取相似艺人
-        logger.info("跨艺术家源: 获取 '%s'(ID:%s) 的相似艺人...", artist_name, artist_id)
-        try:
-            similar_artists = await asyncio.wait_for(
-                self.mcp.get_similar_artists(str(artist_id)), timeout=15.0
-            )
-        except asyncio.TimeoutError:
-            logger.warning("跨艺术家源: 获取相似艺人超时")
-            return []
-        except Exception as e:
-            logger.warning("跨艺术家源: 获取相似艺人失败 - %s", e)
-            return []
-
-        logger.info("跨艺术家源: '%s' 有 %d 个相似艺人", artist_name, len(similar_artists))
-
-        # 2. 并发获取相似艺人的热门歌曲（取前 5 个相似艺人，每个 3 首）
-        target_artists = [sa for sa in similar_artists[:5] if sa.get("id")]
-        logger.info("跨艺术家源: 并发获取 %d 个相似艺人的热门歌曲...", len(target_artists))
-
-        async def fetch_artist_tracks(sa):
+        for pl in target_playlists:
+            pl_id = str(pl.get("id", ""))
+            pl_name = pl.get("name", "")
+            logger.info("歌单源: 获取歌单 '%s' 的歌曲...", pl_name)
             try:
-                return await asyncio.wait_for(
-                    self.mcp.get_artist_tracks(str(sa["id"]), limit=3), timeout=10.0
+                tracks = await asyncio.wait_for(
+                    self.mcp.get_playlist_songs(pl_id, limit=20),
+                    timeout=15.0,
                 )
-            except asyncio.TimeoutError:
-                logger.debug("跨艺术家源: 获取艺人 %s 歌曲超时", sa.get("name"))
-                return []
-            except Exception:
-                return []
+                for t in tracks:
+                    tid = str(t.get("id", ""))
+                    t_name = t.get("name", "")
+                    t_artist = t.get("artist", "").lower()
+                    if tid and tid not in seen_ids and tid != anchor_id:
+                        if anchor_artist not in t_artist:
+                            if self._language_match(anchor_name, t_name):
+                                if not self._is_low_quality(t_name):
+                                    seen_ids.add(tid)
+                                    all_tracks.append(
+                                        Song(id=tid, name=t_name, artist=t.get("artist", "未知"))
+                                    )
+            except Exception as e:
+                logger.warning("歌单源: 获取歌单 %s 失败 - %s", pl_id, e)
 
-        # 并发请求所有相似艺人的歌曲
-        results = await asyncio.gather(*[fetch_artist_tracks(sa) for sa in target_artists])
-
-        for tracks in results:
-            for t in tracks:
-                tid = str(t.id)
-                t_artist = t.artist.lower()
-                t_name = t.name
-                # 过滤条件：
-                # 1. 排除锚点 artist
-                # 2. 去重
-                # 3. 语言一致性
-                # 4. 排除低质内容
-                if tid and tid not in seen_ids and anchor_artist not in t_artist:
-                    if self._language_match(anchor_name, t_name):
-                        if not any(kw in t_name.lower() for kw in ["dj版", "车载版", "抖音", "cover"]):
-                            seen_ids.add(tid)
-                            all_tracks.append(t)
-
-        logger.info("跨艺术家源: 共获得 %d 首（不同 artist）", len(all_tracks))
+        logger.info("歌单源: 共获得 %d 首", len(all_tracks))
         return all_tracks
 
 
 class MultiSourceCollector:
     """多源候选采集器 - 整合所有来源"""
 
-    def __init__(self, mcp_client: CloudMusicMCPClient):
+    def __init__(self, mcp_client: CloudMusicMCPClient, hierarchy=None):
         self.mcp = mcp_client
         self.sources = [
-            SimilarSource(mcp_client),
-            ArtistTopSource(mcp_client),
-            AlbumSource(mcp_client),
-            DailyRecSource(mcp_client),
-            TagSearchSource(mcp_client),
-            GenreSearchSource(mcp_client),
-            CrossArtistSource(mcp_client),
+            AlbumSource(mcp_client),        # 同专辑 - DJ 金矿
+            SimilarSource(mcp_client),      # 相似推荐
+            ArtistTopSource(mcp_client),    # 艺人热门
+            CrossArtistSource(mcp_client),  # 相似艺人 - 核心价值
+            StyleSongSource(mcp_client, hierarchy),  # 曲风标签歌曲
+            PlaylistSource(mcp_client),     # 歌单
+            GenreSearchSource(mcp_client),  # 流派搜索 - Fallback
         ]
 
     @staticmethod
     def _deduplicate(songs: list[Song]) -> list[Song]:
-        """按 song id 去重"""
         seen = set()
         result = []
         for song in songs:
@@ -315,15 +431,6 @@ class MultiSourceCollector:
         return result
 
     async def collect(self, anchors: list[dict]) -> list[Song]:
-        """
-        从多个来源收集候选歌曲（所有来源并发执行）
-
-        Args:
-            anchors: 锚点歌曲列表 [{id, name, artist, artist_id, album_id}]
-
-        Returns:
-            去重后的候选歌曲列表
-        """
         all_candidates = []
         per_source_stats = {}
 
@@ -331,7 +438,6 @@ class MultiSourceCollector:
             anchor_name = anchor.get("name", "未知")
             logger.info("为多源采集锚点: %s", anchor_name)
 
-            # 逐个 source 采集（串行，避免 gather 并发卡死）
             for source in self.sources:
                 source_name = source.__class__.__name__
                 try:
@@ -345,9 +451,8 @@ class MultiSourceCollector:
                 except Exception as e:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
 
-        # 去重
         unique_candidates = self._deduplicate(all_candidates)
         logger.info("多源采集完成: %d 首候选（去重前 %d 首）", len(unique_candidates), len(all_candidates))
-        for source_name, count in per_source_stats.items():
+        for source_name, count in sorted(per_source_stats.items(), key=lambda x: -x[1]):
             logger.info("  - %s: %d 首", source_name, count)
         return unique_candidates

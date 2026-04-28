@@ -52,7 +52,7 @@ class SongFilter:
         self,
         bpm_tolerance: float = 5.0,
         key_match_priority: bool = True,
-        min_score: float = 30.0,
+        min_score: float = 20.0,
         # 可配置的权重
         bpm_weight: float = 0.25,
         key_weight: float = 0.30,
@@ -68,7 +68,7 @@ class SongFilter:
         self.artist_weight = artist_weight
         self.diversity_weight = diversity_weight
         self.genre_weight = genre_weight
-        self.genre_threshold = 30.0  # 曲风兼容性低于此值时大幅惩罚
+        self.genre_threshold = 15.0  # 曲风兼容性低于此值时惩罚（DJ视角：过渡曲目可能风格不同但可混音）
         self._genre_resolver = GenreResolver()
 
     def _extract_bpm(self, song: Song) -> Optional[float]:
@@ -295,9 +295,9 @@ class SongFilter:
                 + genre_s * weights.get("genre", 0)
             )
 
-            # 曲风硬过滤：兼容性过低时大幅惩罚
+            # 曲风惩罚：兼容性过低时降分（但不完全排除，pair-wise 过渡可能挽救）
             if genre_s < self.genre_threshold and candidate_genres:
-                total = base_total * 0.3  # 大幅降分
+                total = base_total * 0.5  # 降分但不杀死
             else:
                 total = base_total
 
