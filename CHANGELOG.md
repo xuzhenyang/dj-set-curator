@@ -5,6 +5,24 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.1] - 2026-04-28
+
+### 新增
+
+- **曲风层级树兼容性计算**：基于网易云官方 644 个曲风标签的三级层级树计算兼容性
+  - `StyleHierarchy` 类：管理曲风节点映射（name→node、id→node）
+  - 关系评分：相同节点=100 / 祖孙=85 / 兄弟=70 / 同根不同支=40 / 不同根=10
+  - 复合标签自动拆分（如 `流行-欧美流行` → `流行` + `欧美流行`）
+- **网易云音乐百科 API 集成**：`cloud_music_get_song_wiki` 获取歌曲曲风/情绪标签
+- `cloud_music_get_style_list` 工具：获取完整曲风层级树（27 大类 / 275 子类 / 342 细分）
+- 曲风缓存：`style_tree.json` + `genre_cache.json` 双缓存机制
+
+### 变更
+
+- **移除 Last.fm 依赖**：`pylast` 完全移除，改为纯网易云原生 API
+- `genre_resolver.py` 重写：层级树优先 → fallback 硬编码矩阵 → 内置映射表兜底
+- `GenreResolver.prefill()` 自动加载曲风层级树（缓存优先，API 兜底）
+
 ## [0.3.0] - 2026-04-27
 
 ### 新增
