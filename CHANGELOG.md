@@ -5,6 +5,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### 修复
+
+- **MCP 连接重复初始化**：`cli.py` 中 `connect()` 被调用两次导致 `stdio_client` context 泄漏，引发 `RuntimeError: Attempted to exit cancel scope in a different task`
+- **MCP cleanup 异常处理**：`mcp_client.py` 中 `cleanup()` 对 `__aexit__` 增加 try-except 保护，避免异常级联
+
+### 变更
+
+- **音频分析超时调优**：总时间上限 120s → **300s**，单首超时 20s → **30s**，提升候选池音频分析覆盖率（~52% → ~76%）
+- **README 更新**：同步文档中所有 120s 相关描述为 300s
+
+---
+
 ## [0.3.2] - 2026-04-28
 
 ### 新增

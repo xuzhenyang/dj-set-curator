@@ -113,9 +113,116 @@ def create(
 
     async def run():
         mcp_cmd = get_mcp_server_command(server_command)
+        mcp_client = CloudMusicMCPClient(server_command=mcp_cmd)
         try:
-            mcp_client = CloudMusicMCPClient(server_command=mcp_cmd)
-            await mcp_client.connect()
+            async with mcp_client as mcp:
+                # 检查登录
+                if not await _check_login(mcp):
+                    raise typer.Exit(1)
+
+                # 显示锚点分析
+                console.print(f"\n[bold cyan]🎵 锚点歌曲分析:[/bold cyan]")
+                for i, a in enumerate(anchor, 1):
+                    console.print(f"  {i}. [dim]{a}[/dim]")
+
+                # 构建筛选配置
+                filter_config = {
+                    "bpm_tolerance": bpm_tolerance,
+                }
+
+                curator = DJSetCurator(mcp_client=mcp, filter_config=filter_config)
+
+                # 执行选曲
+                with console.status("[bold green]正在构建歌单..."):
+                    try:
+                        result = await curator.build_playlist(
+                            anchor_queries=list(anchor),
+                            playlist_name=name,
+                            target_count=count,
+                            diversity_ratio=diversity,
+                            enable_expand=expand,
+                            arrange_mode=arrange_mode,
+                            dry_run=dry_run,
+                        )
+                    except ValueError as e:
+                        console.print(f"[bold red]输入错误: {e}[/bold red]")
+                        raise typer.Exit(1)
+                    except RuntimeError as e:
+                        console.print(f"[bold red]运行错误: {e}[/bold red]")
+                        raise typer.Exit(1)
+
+                # 展示结果
+                anchor_count = result['stats'].get('anchor_count', len(result['anchors']))
+                selected_count = result['stats'].get('selected_count', result['stats']['filtered_count'] - anchor_count)
+
+                if dry_run:
+                    console.print(f"\n[bold yellow]🔍 预览模式 - 未创建歌单[/bold yellow]")
+                    console.print(
+                        Panel(
+                            f"[bold]{result['playlist_name']}[/bold]\n"
+                            f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
+                            f"  候选池: {result['stats']['total_candidates']} 首\n"
+                            f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
+                            f"  平均评分: {result['stats']['avg_score']}",
+                            title="📁 预览信息",
+                            border_style="yellow",
+                        )
+                    )
+                else:
+                    console.print(f"\n[bold green]✅ 歌单构建完成![/bold green]")
+                    console.print(
+                        Panel(
+                            f"[bold]{result['playlist_name']}[/bold]\n"
+                            f"  ID: {result['playlist_id']}\n"
+                            f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
+                            f"  候选池: {result['stats']['total_candidates']} 首\n"
+                            f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
+                            f"  平均评分: {result['stats']['avg_score']}",
+                            title="📁 歌单信息",
+                            border_style="green",
+                        )
+                    )
+
+                # 详细列表
+                if verbose or dry_run:
+                    table = Table(
+                        title=f"选曲列表 - {result['playlist_name']}",
+                        box=box.ROUNDED,
+                    )
+                    table.add_column("#", style="cyan", justify="right", width=4)
+                    table.add_column("歌曲", style="magenta")
+                    table.add_column("艺术家", style="green")
+                    table.add_column("评分", style="yellow", justify="right", width=6)
+                    table.add_column("匹配原因", style="dim")
+
+                    # 先展示锚点歌曲
+                    for i, a in enumerate(result["anchors"], 1):
+                        table.add_row(
+                            str(i),
+                            a.name,
+                            a.artist,
+                            "—",
+                            "[bold cyan]锚点[/bold cyan]",
+                        )
+
+                    # 再展示推荐歌曲
+                    for i, s in enumerate(result["selected_songs"], 1 + anchor_count):
+                        reasons = ", ".join(s.match_reasons) if s.match_reasons else "相似推荐"
+                        table.add_row(
+                            str(i),
+                            s.song.name,
+                            s.song.artist,
+                            f"{s.score:.0f}",
+                            reasons,
+                        )
+                    console.print(table)
+
+                # 状态摘要
+                if verbose:
+                    status = curator.get_status()
+                    console.print(f"\n[dim]最后状态: {status['stage']} - {status['message']} (进度: {status['progress']}%)[/dim]")
+
+                return result
         except FileNotFoundError:
             _show_config_help()
             raise typer.Exit(1)
@@ -123,115 +230,6 @@ def create(
             console.print(f"[bold red]连接 MCP Server 失败: {e}[/bold red]")
             _show_config_help()
             raise typer.Exit(1)
-
-        async with mcp_client as mcp:
-            # 检查登录
-            if not await _check_login(mcp):
-                raise typer.Exit(1)
-
-            # 显示锚点分析
-            console.print(f"\n[bold cyan]🎵 锚点歌曲分析:[/bold cyan]")
-            for i, a in enumerate(anchor, 1):
-                console.print(f"  {i}. [dim]{a}[/dim]")
-
-            # 构建筛选配置
-            filter_config = {
-                "bpm_tolerance": bpm_tolerance,
-            }
-
-            curator = DJSetCurator(mcp_client=mcp, filter_config=filter_config)
-
-            # 执行选曲
-            with console.status("[bold green]正在构建歌单..."):
-                try:
-                    result = await curator.build_playlist(
-                        anchor_queries=list(anchor),
-                        playlist_name=name,
-                        target_count=count,
-                        diversity_ratio=diversity,
-                        enable_expand=expand,
-                        arrange_mode=arrange_mode,
-                        dry_run=dry_run,
-                    )
-                except ValueError as e:
-                    console.print(f"[bold red]输入错误: {e}[/bold red]")
-                    raise typer.Exit(1)
-                except RuntimeError as e:
-                    console.print(f"[bold red]运行错误: {e}[/bold red]")
-                    raise typer.Exit(1)
-
-            # 展示结果
-            anchor_count = result['stats'].get('anchor_count', len(result['anchors']))
-            selected_count = result['stats'].get('selected_count', result['stats']['filtered_count'] - anchor_count)
-
-            if dry_run:
-                console.print(f"\n[bold yellow]🔍 预览模式 - 未创建歌单[/bold yellow]")
-                console.print(
-                    Panel(
-                        f"[bold]{result['playlist_name']}[/bold]\n"
-                        f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
-                        f"  候选池: {result['stats']['total_candidates']} 首\n"
-                        f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
-                        f"  平均评分: {result['stats']['avg_score']}",
-                        title="📁 预览信息",
-                        border_style="yellow",
-                    )
-                )
-            else:
-                console.print(f"\n[bold green]✅ 歌单构建完成![/bold green]")
-                console.print(
-                    Panel(
-                        f"[bold]{result['playlist_name']}[/bold]\n"
-                        f"  ID: {result['playlist_id']}\n"
-                        f"  锚点: {', '.join(a.name for a in result['anchors'])}\n"
-                        f"  候选池: {result['stats']['total_candidates']} 首\n"
-                        f"  总入选: {result['stats']['filtered_count']} 首（锚点 {anchor_count} 首 + 推荐 {selected_count} 首）\n"
-                        f"  平均评分: {result['stats']['avg_score']}",
-                        title="📁 歌单信息",
-                        border_style="green",
-                    )
-                )
-
-            # 详细列表
-            if verbose or dry_run:
-                table = Table(
-                    title=f"选曲列表 - {result['playlist_name']}",
-                    box=box.ROUNDED,
-                )
-                table.add_column("#", style="cyan", justify="right", width=4)
-                table.add_column("歌曲", style="magenta")
-                table.add_column("艺术家", style="green")
-                table.add_column("评分", style="yellow", justify="right", width=6)
-                table.add_column("匹配原因", style="dim")
-
-                # 先展示锚点歌曲
-                for i, a in enumerate(result["anchors"], 1):
-                    table.add_row(
-                        str(i),
-                        a.name,
-                        a.artist,
-                        "—",
-                        "[bold cyan]锚点[/bold cyan]",
-                    )
-
-                # 再展示推荐歌曲
-                for i, s in enumerate(result["selected_songs"], 1 + anchor_count):
-                    reasons = ", ".join(s.match_reasons) if s.match_reasons else "相似推荐"
-                    table.add_row(
-                        str(i),
-                        s.song.name,
-                        s.song.artist,
-                        f"{s.score:.0f}",
-                        reasons,
-                    )
-                console.print(table)
-
-            # 状态摘要
-            if verbose:
-                status = curator.get_status()
-                console.print(f"\n[dim]最后状态: {status['stage']} - {status['message']} (进度: {status['progress']}%)[/dim]")
-
-            return result
 
     try:
         asyncio.run(run())

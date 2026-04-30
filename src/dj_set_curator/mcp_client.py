@@ -54,7 +54,10 @@ class CloudMusicMCPClient:
             self.session = await self._stdio_context.__aenter__()
         except Exception:
             # 清理已创建的 stdio_client context
-            await self._client_context.__aexit__(*sys.exc_info())
+            try:
+                await self._client_context.__aexit__(*sys.exc_info())
+            except Exception:
+                pass
             self._client_context = None
             self._stdio_context = None
             raise
@@ -65,10 +68,16 @@ class CloudMusicMCPClient:
     async def cleanup(self):
         """清理资源，关闭会话"""
         if self._stdio_context:
-            await self._stdio_context.__aexit__(None, None, None)
+            try:
+                await self._stdio_context.__aexit__(None, None, None)
+            except Exception:
+                pass
             self._stdio_context = None
         if self._client_context:
-            await self._client_context.__aexit__(None, None, None)
+            try:
+                await self._client_context.__aexit__(None, None, None)
+            except Exception:
+                pass
             self._client_context = None
         self.session = None
         logger.info("MCP Client disconnected")

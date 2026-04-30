@@ -210,7 +210,7 @@ class DJSetCurator:
 
         batch_analyzer = BatchAudioAnalyzer(analyzer, status_callback=_update_status)
         analyzed_count, skipped_count = await batch_analyzer.analyze_songs_batch(
-            unique_candidates, t_analysis_start, time_limit=120.0
+            unique_candidates, t_analysis_start, time_limit=300.0
         )
         analyzer.flush_cache()  # 批量分析结束后统一持久化缓存
 

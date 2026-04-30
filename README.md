@@ -30,7 +30,7 @@
 - **智能命名**：自动生成 `[DJ Curator] {模式} | {艺人}` 格式歌单名，一眼识别来源和氛围
 - **预览模式**：`--dry-run` 只预览候选池和预测选曲，不创建歌单
 - **分阶段状态**：实时显示当前阶段（连接/采集/分析/选曲/创建）
-- **软超时保护**：音频分析 120 秒上限，超时自动跳过，不阻塞流程
+- **软超时保护**：音频分析 300 秒上限，超时自动跳过，不阻塞流程
 
 ## 前置依赖
 
@@ -320,7 +320,7 @@ dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-
   - 低能量词：acoustic / piano / sleep / chill → -12
 - **全量精分析**（所有缺失 BPM/Key 的候选）：librosa `beat_track` + `chroma_cqt`
   - 按能量优先级排序，优先分析接近锚点能量的候选
-  - **120 秒软超时**：超时自动跳过，剩余候选用 heuristics 能量继续
+  - **300 秒软超时**：超时自动跳过，剩余候选用 heuristics 能量继续
   - 分析结果缓存到 `analysis_cache.json`，永久复用
 - **入选后精能量**（最终入选歌曲）：librosa 四维 DJ 能量分析
   - RMS 响度 25% + 节奏密度（onset 峰值）35% + 低频占比 25% + 频谱质心 15%
@@ -392,7 +392,7 @@ python -m dj_set_curator --anchor "Song Name" --name "Playlist"
 
 1. **登录状态**：使用 `python3 scripts/login.py` 扫码登录，或检查 `python3 scripts/login.py --check`
 2. **MCP Server 配置**：首次使用务必执行 [`dj-curator config --mcp-server /path/to/server`](#快速配置必须)，否则每次都要 `--server`
-3. **音频分析**：首次分析需要下载音频片段（约 5-10 秒/首），120 秒软超时保护，分析结果自动缓存
+3. **音频分析**：首次分析需要下载音频片段（约 5-10 秒/首），300 秒软超时保护，分析结果自动缓存
 4. **API 限制**：频繁调用可能被限流，建议合理使用
 5. **版权**：音频分析仅使用网易云提供的试听链接，不保存完整音频文件
 6. **缓存位置**：默认 `~/Library/Caches/dj-set-curator/` (macOS)，可通过 `DJ_SET_CURATOR_CACHE_DIR` 环境变量覆盖

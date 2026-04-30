@@ -291,7 +291,7 @@ class BatchAudioAnalyzer:
             try:
                 analysis = await asyncio.wait_for(
                     self.analyzer.analyze_song(cid),
-                    timeout=20.0,
+                    timeout=30.0,
                 )
                 if analysis:
                     if not has_bpm:
