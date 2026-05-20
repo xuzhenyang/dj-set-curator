@@ -15,6 +15,7 @@ from dj_set_curator.genre_resolver import GenreResolver
 from dj_set_curator.models import AnchorSong, ScoredSong, Song
 from dj_set_curator.mcp_client import CloudMusicMCPClient
 from dj_set_curator.playlist_naming import format_playlist_name
+from dj_set_curator.rate_limited_client import RateLimitedMCPClient
 from dj_set_curator.sources import MultiSourceCollector
 from dj_set_curator.transition import SequentialSelector, TransitionScorer
 
@@ -66,10 +67,14 @@ class DJSetCurator:
         if not anchor_queries:
             raise ValueError("至少需要提供一个锚点歌曲")
 
+        # 音频分析阶段：包装 MCP client，双层风控间隔
+        # 全局 0.5s + get_audio_url 专用 2.0s
+        mcp_rl = RateLimitedMCPClient(self.mcp, global_interval=0.5, audio_interval=2.0)
+
         # 1. 解析锚点
         t0 = time.time()
         logger.info("正在解析 %d 个锚点歌曲...", len(anchor_queries))
-        anchors = await self.anchor_analyzer.resolve_multiple(anchor_queries, self.mcp)
+        anchors = await self.anchor_analyzer.resolve_multiple(anchor_queries, mcp_rl)
         self._status = {
             "stage": "anchors",
             "progress": 15,
@@ -83,7 +88,7 @@ class DJSetCurator:
 
         # 2. 分析锚点 BPM/Key + 精能量分析
         t0 = time.time()
-        analyzer = AudioAnalyzer(self.mcp, max_analysis_duration=15.0)
+        analyzer = AudioAnalyzer(mcp_rl, max_analysis_duration=15.0)
         for anchor in anchors:
             if anchor.bpm is None or anchor.key is None:
                 analysis = await analyzer.analyze_song(anchor.id)
@@ -101,8 +106,8 @@ class DJSetCurator:
         # 尝试精分析锚点能量和结构（复用同一个分析器实例）
         from dj_set_curator.arranger import EnergyAnalyzer, SongStructureAnalyzer
 
-        energy_analyzer = EnergyAnalyzer(self.mcp)
-        structure_analyzer = SongStructureAnalyzer(self.mcp)
+        energy_analyzer = EnergyAnalyzer(mcp_rl)
+        structure_analyzer = SongStructureAnalyzer(mcp_rl)
         for anchor in anchors:
             if anchor.bpm is not None:
                 anchor_energy = anchor.bpm * 0.5
@@ -113,7 +118,7 @@ class DJSetCurator:
                 except Exception:
                     pass
                 anchor.energy = anchor_energy
-            # 分析锚点歌曲结构（异步，不阻塞主流程）
+            # 分析锚点歌曲结构
             try:
                 struct = await structure_analyzer.analyze(anchor.id)
                 if struct:
@@ -128,18 +133,18 @@ class DJSetCurator:
                 pass
 
         # 2.5 预加载曲风层级树（供 StyleSongSource / GenreSearchSource / SongFilter 使用）
-        genre_resolver = GenreResolver(self.mcp)
+        genre_resolver = GenreResolver(mcp_rl)
         await genre_resolver.load_style_hierarchy()
         self.filter.set_hierarchy(genre_resolver.hierarchy)
 
         # 3. 多源采集候选歌曲
         t0 = time.time()
-        collector = MultiSourceCollector(self.mcp, hierarchy=genre_resolver.hierarchy)
+        collector = MultiSourceCollector(mcp_rl, hierarchy=genre_resolver.hierarchy)
 
         async def _fetch_anchor_detail(a: AnchorSong) -> dict:
             ad = {"id": a.id, "name": a.name, "artist": a.artist}
             try:
-                detail = await self.mcp.get_song_detail(a.id)
+                detail = await mcp_rl.get_song_detail(a.id)
                 if isinstance(detail, dict):
                     ad["artist_id"] = detail.get("artist_id")
                     ad["album_id"] = detail.get("album_id")
@@ -188,7 +193,7 @@ class DJSetCurator:
 
         # 5. 级联扩展（如启用且候选不足）
         if enable_expand and len(unique_candidates) < target_count:
-            expander = CascadeExpander(self.mcp)
+            expander = CascadeExpander(mcp_rl)
             unique_candidates = await expander.expand(
                 unique_candidates, anchors, target_count
             )
@@ -210,7 +215,7 @@ class DJSetCurator:
 
         batch_analyzer = BatchAudioAnalyzer(analyzer, status_callback=_update_status)
         analyzed_count, skipped_count = await batch_analyzer.analyze_songs_batch(
-            unique_candidates, t_analysis_start, time_limit=300.0
+            unique_candidates, t_analysis_start, time_limit=600.0
         )
         analyzer.flush_cache()  # 批量分析结束后统一持久化缓存
 
@@ -307,10 +312,10 @@ class DJSetCurator:
                 "message": "创建歌单...",
             }
             logger.info("正在创建歌单 '%s'...", final_name)
-            playlist_id = await self.mcp.create_playlist(final_name)
+            playlist_id = await mcp_rl.create_playlist(final_name)
             logger.info("歌单创建成功，ID: %s", playlist_id)
 
-            await self.mcp.add_tracks_to_playlist(playlist_id, track_ids)
+            await mcp_rl.add_tracks_to_playlist(playlist_id, track_ids)
             logger.info(
                 "已添加 %d 首歌曲到歌单（含 %d 首锚点）",
                 len(track_ids),

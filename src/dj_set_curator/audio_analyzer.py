@@ -322,22 +322,8 @@ class BatchAudioAnalyzer:
 
             batch = to_analyze[i:i + batch_size]
             batch_num = i // batch_size + 1
-            results = await asyncio.gather(*[_analyze_one(item) for item in batch])
-            analyzed_count += sum(1 for r in results if r)
-            if self._status:
-                self._status(
-                    stage="analysis",
-                    progress=30 + int(40 * analyzed_count / max(len(to_analyze), 1)),
-                    message=f"音频分析 ({analyzed_count}/{len(to_analyze)}首)",
-                )
-            logger.info(
-                "[进度] 音频分析 %d/%d 批完成 (%d/%d 首), 成功 %d 首, 已用 %.1fs",
-                batch_num,
-                total_batches,
-                min(i + batch_size, len(to_analyze)),
-                len(to_analyze),
-                analyzed_count,
-                time.time() - t_analysis_start,
-            )
-
-        return analyzed_count, skipped_count
+            # 串行执行，同批内走全局 2.0s 间隔（在 mcp_client.get_audio_url 中实现）
+            results = []
+            for idx, item in enumerate(batch):
+                result = await _analyze_one(item)
+                results.append(result)
