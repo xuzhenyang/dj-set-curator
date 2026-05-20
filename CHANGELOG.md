@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### 重构
+
+- **风控代理迁移**：所有风控间隔逻辑从 `mcp_client.py` 迁移至 `dj-set-curator` 内部的 `rate_limited_client.py`
+  - `mcp_client.py` 完全回滚为纯净 MCP 调用封装，不包含任何风控/间隔/重试逻辑
+  - 新增 `RateLimitedMCPClient` 代理类：通过 `__getattr__` 动态拦截所有 async 方法调用
+  - 双层锁策略：全局锁 0.5s（所有 API 调用之间）+ audio 专用锁 2.0s（`get_audio_url` 额外保护）
+  - `curator.py`：所有 `self.mcp` 统一替换为 `mcp_rl`，覆盖锚点解析、采集、扩展、歌单创建全链路
+  - `audio_analyzer.py`：batch 分析改为串行执行，依赖代理层的间隔控制
+  - 单元测试验证：普通调用间隔 0.5s、audio 调用额外 2.0s、混合调用双层约束均通过
+
+### 变更
+
+- **文档同步**：`dj-mcp-architecture.md` + `dj-set-curator-execution-plan.md` 按 v0.3.2 真实代码状态全面重写
+  - 反映实际 19 文件项目结构（vs 计划中的 7 个）
+  - 记录双层锁架构设计决策和版本演进表
+  - 补充时间预算分析、已知限制与降级方案
+
 ### 修复
 
 - **MCP 连接重复初始化**：`cli.py` 中 `connect()` 被调用两次导致 `stdio_client` context 泄漏，引发 `RuntimeError: Attempted to exit cancel scope in a different task`
