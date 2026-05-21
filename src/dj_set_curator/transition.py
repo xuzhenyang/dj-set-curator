@@ -253,6 +253,8 @@ class SequentialSelector:
 
     def _get_target_energies(self, count: int) -> list[float]:
         """生成目标能量曲线（支持动态曲线）"""
+        if count == 0:
+            return []
         if self.anchor_energies and len(self.anchor_energies) > 0:
             # 动态曲线：基于锚点能量分布
             anchor_mean = float(np.mean(self.anchor_energies))

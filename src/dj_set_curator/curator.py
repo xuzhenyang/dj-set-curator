@@ -69,7 +69,7 @@ class DJSetCurator:
 
         # 音频分析阶段：包装 MCP client，双层风控间隔
         # 全局 0.5s + get_audio_url 专用 2.0s
-        mcp_rl = RateLimitedMCPClient(self.mcp, global_interval=0.5, audio_interval=2.0)
+        mcp_rl = RateLimitedMCPClient(self.mcp, global_interval=0.5, audio_interval=5.0)
 
         # 1. 解析锚点
         t0 = time.time()
@@ -264,7 +264,13 @@ class DJSetCurator:
         )
         # target_count 应排除锚点数量（锚点会前置到最终歌单）
         effective_target = max(0, target_count - len(anchors))
-        selected = selector.select(filtered_candidates, anchors, effective_target)
+        
+        if effective_target == 0:
+            # 目标数量刚好等于锚点数量，无需额外选曲
+            selected = []
+        else:
+            selected = selector.select(filtered_candidates, anchors, effective_target)
+        
         self._status = {
             "stage": "selection",
             "progress": 80,
@@ -272,30 +278,37 @@ class DJSetCurator:
         }
         logger.info("[计时] 贪心序列构建: %.2fs", time.time() - t0)
 
-        if not selected:
+        # 允许 selected 为空（当 effective_target == 0 时）
+        if not selected and effective_target > 0:
             raise RuntimeError("筛选后没有符合条件的歌曲")
 
-        # 9. 对最终入选歌曲做精能量分析 + 结构分析（并发，带超时）
+        # 9. 对最终入选歌曲做精能量分析 + 结构分析（串行执行，降低 session 风控概率）
         async def _refine_song(s: ScoredSong) -> None:
             sid = str(s.song.id)
+            energy_success = False
             try:
                 precise_energy = await asyncio.wait_for(
-                    energy_analyzer.analyze_energy(sid), timeout=15.0
+                    energy_analyzer.analyze_energy(sid), timeout=20.0
                 )
                 if precise_energy is not None:
                     s.song.energy = precise_energy
+                    energy_success = True
             except Exception:
                 pass
-            try:
-                struct = await asyncio.wait_for(
-                    structure_analyzer.analyze(sid), timeout=15.0
-                )
-                if struct:
-                    s.song.structure = struct
-            except Exception:
-                pass
+            # 如果能量分析成功才做结构分析，避免同一首歌对 session 二次冲击
+            if energy_success:
+                try:
+                    struct = await asyncio.wait_for(
+                        structure_analyzer.analyze(sid), timeout=20.0
+                    )
+                    if struct:
+                        s.song.structure = struct
+                except Exception:
+                    pass
 
-        await asyncio.gather(*[_refine_song(s) for s in selected])
+        # 串行执行，避免并发 get_audio_url 导致 session 被网易风控
+        for s in selected:
+            await _refine_song(s)
 
         # 10. 组装最终歌单：锚点歌曲 + 选中歌曲（去重，锚点放前面）
         anchor_ids = [a.id for a in anchors]

@@ -327,3 +327,14 @@ class BatchAudioAnalyzer:
             for idx, item in enumerate(batch):
                 result = await _analyze_one(item)
                 results.append(result)
+                if result:
+                    analyzed_count += 1
+
+            if self._status:
+                self._status(
+                    "audio_analysis",
+                    int(5 + 25 * (batch_num / total_batches)),
+                    f"音频分析: 批次 {batch_num}/{total_batches}",
+                )
+
+        return analyzed_count, skipped_count

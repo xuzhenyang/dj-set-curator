@@ -68,14 +68,24 @@ class RateLimitedMCPClient:
                         if audio_elapsed < self._audio_interval and self._last_audio_time > 0:
                             await asyncio.sleep(self._audio_interval - audio_elapsed)
 
+                        try:
+                            result = await real_attr(*args, **kwargs)
+                            self._last_audio_time = time.time()
+                            self._last_global_time = time.time()
+                            return result
+                        except Exception:
+                            # 异常时也要更新时间戳，避免失败请求密集冲击
+                            self._last_audio_time = time.time()
+                            self._last_global_time = time.time()
+                            raise
+                else:
+                    try:
                         result = await real_attr(*args, **kwargs)
-                        self._last_audio_time = time.time()
                         self._last_global_time = time.time()
                         return result
-                else:
-                    result = await real_attr(*args, **kwargs)
-                    self._last_global_time = time.time()
-                    return result
+                    except Exception:
+                        self._last_global_time = time.time()
+                        raise
 
         return _wrapped
 
