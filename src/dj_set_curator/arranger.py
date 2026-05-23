@@ -87,13 +87,24 @@ class EnergyAnalyzer:
             return None
 
     async def analyze_energy(self, song_id: str) -> Optional[float]:
-        """分析歌曲 DJ 能量（0-100），返回 None 表示失败"""
+        """分析歌曲 DJ 能量（0-100），返回 None 表示失败
+
+        🛡 风控优化：如果 AudioAnalyzer 已经下载了该歌曲的缓存文件，
+        直接复用，跳过 get_audio_url 调用。
+        """
         try:
-            audio_info = await self.mcp.get_audio_url(song_id)
-            url = audio_info.get("url")
-            if not url:
-                return None
-            local_path = await self._download_audio(song_id, url)
+            # 优先复用已缓存的音频文件（避免重复调用 get_audio_url）
+            segments_dir = get_audio_segments_dir()
+            cached_path = os.path.join(segments_dir, f"{song_id}.mp3")
+            if os.path.exists(cached_path) and os.path.getsize(cached_path) > 0:
+                local_path = cached_path
+            else:
+                audio_info = await self.mcp.get_audio_url(song_id)
+                url = audio_info.get("url")
+                if not url:
+                    return None
+                local_path = await self._download_audio(song_id, url)
+
             features = await asyncio.to_thread(self._analyze_features_sync, local_path)
             if features is None:
                 return None
@@ -176,13 +187,24 @@ class SongStructureAnalyzer:
             return None
 
     async def analyze(self, song_id: str) -> Optional[dict]:
-        """异步分析歌曲结构"""
+        """异步分析歌曲结构
+
+        🛡 风控优化：如果 AudioAnalyzer 已经下载了该歌曲的缓存文件，
+        直接复用，跳过 get_audio_url 调用。
+        """
         try:
-            audio_info = await self.mcp.get_audio_url(song_id)
-            url = audio_info.get("url")
-            if not url:
-                return None
-            local_path = await self.energy_analyzer._download_audio(song_id, url)
+            # 优先复用已缓存的音频文件（避免重复调用 get_audio_url）
+            segments_dir = get_audio_segments_dir()
+            cached_path = os.path.join(segments_dir, f"{song_id}.mp3")
+            if os.path.exists(cached_path) and os.path.getsize(cached_path) > 0:
+                local_path = cached_path
+            else:
+                audio_info = await self.mcp.get_audio_url(song_id)
+                url = audio_info.get("url")
+                if not url:
+                    return None
+                local_path = await self.energy_analyzer._download_audio(song_id, url)
+
             return await asyncio.to_thread(self._analyze_structure_sync, local_path)
         except Exception as e:
             logger.warning("歌曲结构分析失败: %s - %s", song_id, e)

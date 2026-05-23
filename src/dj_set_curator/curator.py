@@ -69,7 +69,7 @@ class DJSetCurator:
 
         # 音频分析阶段：包装 MCP client，双层风控间隔
         # 全局 0.5s + get_audio_url 专用 2.0s
-        mcp_rl = RateLimitedMCPClient(self.mcp, global_interval=0.5, audio_interval=5.0)
+        mcp_rl = RateLimitedMCPClient(self.mcp, global_interval=1.0, audio_interval=5.0)
 
         # 1. 解析锚点
         t0 = time.time()
@@ -197,6 +197,11 @@ class DJSetCurator:
             unique_candidates = await expander.expand(
                 unique_candidates, anchors, target_count
             )
+
+        # 🛡 风控防御：采集后冷却 10s，让 session 从高频搜索中恢复
+        # 避免采集阶段积累的风控计数器在音频分析阶段被触发
+        logger.info("采集完成，冷却 10s...")
+        await asyncio.sleep(10)
 
         # 6. 粗粒度能量估计（所有候选）+ 音频分析（全量并发）
         t_analysis_start = time.time()

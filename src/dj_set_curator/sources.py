@@ -20,12 +20,24 @@ logger = logging.getLogger(__name__)
 class CandidateSource:
     """候选来源基类"""
 
+    # 🛡 风控防御：全局 detail 缓存，避免同一 anchor 被多个 source 重复查询
+    _detail_cache = {}
+
     def __init__(self, mcp_client: CloudMusicMCPClient):
         self.mcp = mcp_client
 
     async def collect(self, anchor: dict) -> list[Song]:
         """返回候选歌曲列表 [Song]"""
         raise NotImplementedError
+
+    async def _get_cached_detail(self, song_id: str) -> dict:
+        """带缓存的 get_song_detail，避免同一 anchor 被多个 source 重复查询"""
+        if song_id in CandidateSource._detail_cache:
+            return CandidateSource._detail_cache[song_id]
+        detail = await self.mcp.get_song_detail(song_id)
+        if isinstance(detail, dict):
+            CandidateSource._detail_cache[song_id] = detail
+        return detail
 
     @staticmethod
     def _has_chinese(text: str) -> bool:
@@ -101,7 +113,7 @@ class ArtistTopSource(CandidateSource):
         artist_id = anchor.get("artist_id")
         artist_name = anchor.get("artist", "")
         if not artist_id:
-            detail = await self.mcp.get_song_detail(str(anchor.get("id", "")))
+            detail = await self._get_cached_detail(str(anchor.get("id", "")))
             artist_id = detail.get("artist_id") if isinstance(detail, dict) else None
             if not artist_id:
                 logger.warning("艺术家源: 无法获取 '%s' 的 artist_id", artist_name)
@@ -120,7 +132,7 @@ class AlbumSource(CandidateSource):
         album_id = anchor.get("album_id")
         song_name = anchor.get("name", "")
         if not album_id:
-            detail = await self.mcp.get_song_detail(str(anchor.get("id", "")))
+            detail = await self._get_cached_detail(str(anchor.get("id", "")))
             album_id = detail.get("album_id") if isinstance(detail, dict) else None
             if not album_id:
                 logger.warning("专辑源: 无法获取 '%s' 的 album_id", song_name)
@@ -506,14 +518,15 @@ class MultiSourceCollector:
 
     def __init__(self, mcp_client: CloudMusicMCPClient, hierarchy=None):
         self.mcp = mcp_client
+        # 🛡 风控防御：裁剪冗余 source，减少并发 API 调用量
+        # 移除 CrossArtistSource（get_similar_artists API 不可用，已降级为空）
+        # 移除 GenreSearchSource（被 StyleSongSource 覆盖，BPM fallback 质量不高）
         self.sources = [
             AlbumSource(mcp_client),        # 同专辑 - DJ 金矿
             SimilarSource(mcp_client),      # 相似推荐
             ArtistTopSource(mcp_client),    # 艺人热门
-            CrossArtistSource(mcp_client),  # 相似艺人 - 核心价值
             StyleSongSource(mcp_client, hierarchy),  # 曲风标签歌曲
             PlaylistSource(mcp_client),     # 歌单
-            GenreSearchSource(mcp_client, hierarchy),  # 流派搜索 - Fallback
         ]
 
     @staticmethod
@@ -547,11 +560,14 @@ class MultiSourceCollector:
                     logger.warning("来源 %s 采集失败: %s", source_name, e)
                     return source_name, []
 
-            results = await asyncio.gather(*[_fetch(src) for src in self.sources])
-            for source_name, tracks in results:
+            # 🛡 风控防御：串行采集 + source 间冷却（2s），避免 session 被打热
+            for src in self.sources:
+                source_name, tracks = await _fetch(src)
                 all_candidates.extend(tracks)
                 per_source_stats[source_name] = per_source_stats.get(source_name, 0) + len(tracks)
                 logger.info("来源 %s: 采集完成 (%d 首)", source_name, len(tracks))
+                # source 间冷却：让 session 喘口气
+                await asyncio.sleep(2.0)
 
         unique_candidates = self._deduplicate(all_candidates)
         logger.info("多源采集完成: %d 首候选（去重前 %d 首）", len(unique_candidates), len(all_candidates))
