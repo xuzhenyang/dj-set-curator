@@ -10,6 +10,19 @@
 ### 重构
 
 - **风控代理迁移**：所有风控间隔逻辑从 `mcp_client.py` 迁移至 `dj-set-curator` 内部的 `rate_limited_client.py`
+- **风控防御**：全面应对网易云 -460 风控，串行采集 + source 间冷却 + IP 轮换 + 缓存去重
+- **裁剪冗余 source**：移除 `CrossArtistSource`（`get_similar_artists` API 不可用，调用量 10 次/anchor）和 `GenreSearchSource`（被 `StyleSongSource` 覆盖，质量不高）
+  - 典型 API 调用量从 25 次/anchor 降至 ~17 次/anchor（-30%）
+  - 采集方式从 `asyncio.gather` 并发（4.5s）改为 for 循环串行 + 2.0s source 间冷却（~20s），彻底稀释时间密度
+- **全局 IP 轮换下沉至 MCP Server**：`cloud_music_mcp/api.py` 新增 `@auto_ip` 装饰器覆盖 11 个关键 API，`auth.py` 新增 0.5s 去重窗口避免 handler 内重复换 IP
+- **缓存锚点详情**：`CandidateSource` 基类新增 `_detail_cache`，`AlbumSource` 和 `ArtistTopSource` 共享，避免同一 anchor 被重复查询
+- **音频复用**：`EnergyAnalyzer` 和 `SongStructureAnalyzer` 优先复用 `AudioAnalyzer` 已缓存的音频文件，单个 anchor 下载从 3 次降至 1 次
+- **采集后冷却**：采集完成后 `sleep(10s)` 再进入音频分析，让 session 从高频搜索中恢复
+- **全局间隔调大**：`RateLimitedMCPClient` 全局间隔从 0.5s 调大到 1.0s
+
+### 重构
+
+- **风控代理迁移**：所有风控间隔逻辑从 `mcp_client.py` 迁移至 `dj-set-curator` 内部的 `rate_limited_client.py`
   - `mcp_client.py` 完全回滚为纯净 MCP 调用封装，不包含任何风控/间隔/重试逻辑
   - 新增 `RateLimitedMCPClient` 代理类：通过 `__getattr__` 动态拦截所有 async 方法调用
   - 双层锁策略：全局锁 0.5s（所有 API 调用之间）+ audio 专用锁 2.0s（`get_audio_url` 额外保护）

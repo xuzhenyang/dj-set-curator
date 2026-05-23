@@ -11,13 +11,11 @@
   - BPM 兼容：支持 ±3% pitch、半速/倍速混音、±5/±10 BPM 分级
   - Key 过渡：DJ-proven Camelot 规则（+1 升能 / -1 降能 / ±2 张力 / relative 和谐）
   - 能量衔接：选曲时直接考虑目标能量曲线，避免事后硬重排
-- **多源采集**：7 个来源并发采集，候选池 40-80 首
+- **多源采集**：5 个来源串行采集，候选池 40-80 首
   - **相似推荐**（网易云官方 API）
   - **艺术家热门**（20 首上限）
-  - **相似艺人**（网易云 `/simi/artist` API，8 艺人×5 首，核心来源）
   - **曲风标签歌曲**（网易云官方曲风体系 `/api/style-tag/home/song`）
   - **歌单挖掘**（搜索包含锚点艺人的精选歌单，人类策展质量）
-  - **流派搜索**（曲风层级树优先，BPM 映射 fallback）
   - **同专辑**
 - **粗粒度能量估计**：BPM 代理 + 歌曲名 heuristics，VIP 歌曲 100% 可用
 - **多维度精能量分析**：librosa 四维综合（RMS 响度 + 节奏密度 + 低频占比 + 频谱质心）
@@ -213,13 +211,11 @@ dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-
 ```
 锚点歌曲
   ↓
-多源采集（7 个来源并行）
+多源采集（5 个来源串行 + 风控冷却）
   ├─ SimilarSource          网易云相似推荐 API
   ├─ ArtistTopSource        艺术家热门歌曲
-  ├─ CrossArtistSource      相似艺人 → 热门歌曲（核心来源）
   ├─ StyleSongSource        网易云官方曲风标签 API
   ├─ PlaylistSource         搜索精选歌单 → 提取曲目
-  ├─ GenreSearchSource      曲风层级树优先 → BPM 映射 fallback
   └─ AlbumSource            同专辑歌曲
   ↓
 去重 + 过滤（ID 去重 / 歌曲名去重 / 语言一致性 / 低质内容过滤）
@@ -228,7 +224,9 @@ dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-
   ↓
 粗粒度能量估计（BPM 代理 + 歌曲名 heuristics）
   ↓
-音频分析（全量并发，所有缺失 BPM/Key 的候选）
+采集后冷却 10s（🛡 风控防御，避免 session 被打热）
+  ↓
+音频分析（串行执行，每批 10 首，依赖风控代理间隔控制）
   ↓
 预过滤（SongFilter 过滤掉低分候选）
   ↓
@@ -236,7 +234,7 @@ dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-
   ← 每一步选择"与当前末尾过渡分最高"的下一首
   ← 同时匹配目标能量曲线
   ↓
-精能量分析（对入选歌曲做 librosa RMS）
+精能量分析（对入选歌曲做 librosa 四维分析）
   ↓
 创建网易云歌单
 ```
@@ -247,15 +245,13 @@ dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-
 |------|------|----------|------|
 | **SimilarSource** | 网易云 `simi/song` API | 10-20 首 | 失败不影响其他源 |
 | **ArtistTopSource** | `GetArtistTracks` API (limit=20) | 15-20 首 | 未登录时自动跳过 |
-| **CrossArtistSource** | `simi/artist` API → 热门歌曲 (8×5) | 20-40 首 | 15s API 超时保护 + 重试 |
 | **StyleSongSource** | 曲风标签 `/style-tag/home/song` API | 10-15 首 | 层级树未加载时跳过 |
 | **PlaylistSource** | 搜索歌单 → 提取曲目 | 5-15 首 | 搜索失败不阻塞 |
-| **GenreSearchSource** | 曲风层级树 tagId 搜索 / BPM fallback | 5-10 首 | 双路径容错 |
 | **AlbumSource** | `GetAlbumInfo` API | 0-5 首 | 单曲专辑自动跳过 |
 
-**采集策略**：并发采集（`asyncio.gather`）+ 每个 source 30 秒超时保护。7 个来源同时执行，大幅降低等待时间。
+**采集策略**：串行采集（for 循环逐源执行）+ 每个 source 间 2.0s 冷却 + 30 秒超时保护。5 个来源顺序执行，总耗时约 20s，但彻底避免并发冲击导致的风控。
 
-**CrossArtistSource 是核心升级**：使用网易云官方 `/simi/artist` API，返回真正风格相近的艺人（如 keshi → Lauv, Demxntia, The Weeknd, JVKE），再获取他们的热门歌曲。质量远高于搜索方案。
+> 原 7 个来源并发采集在快速连续调用时会触发网易云 -460 风控，v0.3.3 起改为串行采集并移除高调用量 source（CrossArtistSource、GenreSearchSource），配合 MCP Server 端 IP 轮换和采集后冷却，实现 0 风控通过率。
 
 ### 过滤策略
 
@@ -320,6 +316,7 @@ dj-curator create -a "周杰伦 - 晴天" --name "纯原推荐" --count 10 --no-
   - 低能量词：acoustic / piano / sleep / chill → -12
 - **全量精分析**（所有缺失 BPM/Key 的候选）：librosa `beat_track` + `chroma_cqt`
   - 按能量优先级排序，优先分析接近锚点能量的候选
+  - **串行执行**：每批 10 首，批次内串行，由风控代理控制 API 调用间隔
   - **300 秒软超时**：超时自动跳过，剩余候选用 heuristics 能量继续
   - 分析结果缓存到 `analysis_cache.json`，永久复用
 - **入选后精能量**（最终入选歌曲）：librosa 四维 DJ 能量分析
@@ -353,6 +350,7 @@ dj-set-curator/
 │   ├── cli.py               # CLI 界面（create / config / version）
 │   ├── config.py            # 配置管理（环境变量/配置文件）
 │   ├── mcp_client.py        # MCP Client 封装（重试+错误处理）
+│   ├── rate_limited_client.py # 🛡 风控代理：双层锁（全局 1.0s + audio 5.0s）
 │   ├── anchor.py            # 锚点歌曲解析（并行）
 │   ├── curator.py           # 选曲引擎核心（ orchestrator ）
 │   ├── filters.py           # 预过滤引擎（Camelot Wheel + BPM + 多样性 + 曲风）
@@ -393,7 +391,11 @@ python -m dj_set_curator --anchor "Song Name" --name "Playlist"
 1. **登录状态**：使用 `python3 scripts/login.py` 扫码登录，或检查 `python3 scripts/login.py --check`
 2. **MCP Server 配置**：首次使用务必执行 [`dj-curator config --mcp-server /path/to/server`](#快速配置必须)，否则每次都要 `--server`
 3. **音频分析**：首次分析需要下载音频片段（约 5-10 秒/首），300 秒软超时保护，分析结果自动缓存
-4. **API 限制**：频繁调用可能被限流，建议合理使用
+4. **🛡 风控防御**：v0.3.3 起全面应对网易云 -460 风控
+   - 多源采集改为串行执行，source 间 2.0s 冷却
+   - MCP Server 端全局 IP 轮换（每次 API 调用前自动切换）
+   - 采集完成后冷却 10s 再进入音频分析
+   - 典型单次调用 API 量从 25 次降至 ~17 次，0 风控通过率
 5. **版权**：音频分析仅使用网易云提供的试听链接，不保存完整音频文件
 6. **缓存位置**：默认 `~/Library/Caches/dj-set-curator/` (macOS)，可通过 `DJ_SET_CURATOR_CACHE_DIR` 环境变量覆盖
 
